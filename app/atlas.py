@@ -101,17 +101,107 @@ def build_atlas(institution: dict[str,Any], assets: list[dict[str,Any]]) -> dict
                            'dormitories':'OSM-общежития внутри границы, назначение требует проверки.',
                            'photos':'Показаны лишь кадры с собственными геотегами; положение в категории не считается геотегом.'}}
 
+def _km(a_lat: float, a_lon: float, b_lat: float, b_lon: float) -> float:
+    lat1, lon1, lat2, lon2 = map(radians, (a_lat, a_lon, b_lat, b_lon))
+    return 6371 * 2 * asin(min(1, sqrt(sin((lat2 - lat1) / 2) ** 2 +
+                                       cos(lat1) * cos(lat2) * sin((lon2 - lon1) / 2) ** 2)))
+
+
+AGREEMENT_KM = 2.0
+
+
+def crosscheck_points(points: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compare campus coordinates coming from independent providers.
+
+    Pure function, so the rule is testable without a network. Agreement between
+    two geocoders built on different data corroborates a *coordinate*. It is
+    still not evidence that any particular photograph was taken there, and the
+    wording below must never suggest otherwise.
+    """
+    usable = [p for p in points if isinstance(p.get("lat"), (int, float)) and isinstance(p.get("lon"), (int, float))]
+    if not usable:
+        return {"points": [], "agreement": "unavailable", "max_distance_km": None,
+                "note": "Ни один геокодер не вернул координату кампуса."}
+    if len(usable) == 1:
+        return {"points": usable, "agreement": "single_source", "max_distance_km": 0.0,
+                "note": f"Координата получена из одного источника ({usable[0]['provider']}); "
+                        "перекрёстной проверки нет."}
+    spread = max(_km(a["lat"], a["lon"], b["lat"], b["lon"])
+                 for i, a in enumerate(usable) for b in usable[i + 1:])
+    providers = ", ".join(sorted({p["provider"] for p in usable}))
+    if spread <= AGREEMENT_KM:
+        return {"points": usable, "agreement": "confirmed", "max_distance_km": round(spread, 2),
+                "note": f"Независимые геокодеры ({providers}) сходятся в пределах "
+                        f"{round(spread, 2)} км. Это подтверждает точку на карте, но не место съёмки фотографий."}
+    return {"points": usable, "agreement": "conflict", "max_distance_km": round(spread, 2),
+            "note": f"Геокодеры ({providers}) расходятся на {round(spread, 2)} км. "
+                    "Показаны все варианты; одна точка не выбирается."}
+
+
+async def campus_geocode_crosscheck(sources, institution: dict[str, Any]) -> dict[str, Any]:
+    """Collect the campus coordinate from every provider we can reach."""
+    points: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    wikidata = institution.get("campus_coordinates")
+    if wikidata:
+        points.append({"provider": "Wikidata", "lat": wikidata["lat"], "lon": wikidata["lon"],
+                       "label": institution["name"], "source_url": wikidata.get("source")})
+    city = institution.get("city")
+    if city:
+        try:
+            for item in (await sources.nominatim(institution["name"], city))[:1]:
+                points.append({"provider": "OpenStreetMap / Nominatim",
+                               "lat": float(item["lat"]), "lon": float(item["lon"]),
+                               "label": item.get("display_name"),
+                               "source_url": f"https://www.openstreetmap.org/{item.get('osm_type')}/{item.get('osm_id')}"})
+        except Exception as exc:  # SourceError, or a malformed payload
+            warnings.append(f"Nominatim: {getattr(exc, 'detail', type(exc).__name__)}")
+    if os.getenv("MAPBOX_TOKEN"):
+        try:
+            for item in (await sources.mapbox_geocode(institution["name"], city, institution.get("country_code")))[:1]:
+                points.append({"provider": "Mapbox", "lat": item["lat"], "lon": item["lon"],
+                               "label": item.get("label"), "source_url": "https://www.mapbox.com/about/maps/"})
+        except Exception as exc:
+            warnings.append(f"Mapbox: {getattr(exc, 'detail', type(exc).__name__)}")
+    result = crosscheck_points(points)
+    result["warnings"] = warnings
+    result["providers_available"] = {
+        "wikidata": bool(wikidata), "nominatim": True, "mapbox": bool(os.getenv("MAPBOX_TOKEN")),
+    }
+    return result
+
+
 async def isochrone(lat: float, lon: float, mode: str, minutes: int) -> dict[str,Any]:
-    key = os.getenv('OPENROUTESERVICE_API_KEY','')
-    if not key:
-        return {'available':False,'reason':'Для расчёта по дорожной сети нужен OPENROUTESERVICE_API_KEY. Зона не подменяется кругом по прямой.'}
+    """Travel-time zone from a real routing engine, or nothing at all.
+
+    Two independent providers are supported and neither is required. Without a
+    key we say so, instead of drawing a straight-line circle that would look
+    like a measurement while being a decoration.
+    """
     if mode not in ('walking','cycling') or minutes not in (10,15,30):
         return {'available':False,'reason':'Недопустимый режим или время.'}
-    profile = {'walking':'foot-walking','cycling':'cycling-regular'}[mode]
+    ors_key = os.getenv('OPENROUTESERVICE_API_KEY','')
+    mapbox_token = os.getenv('MAPBOX_TOKEN','')
+    if not ors_key and not mapbox_token:
+        return {'available':False,'reason':'Для расчёта по дорожной сети нужен OPENROUTESERVICE_API_KEY или MAPBOX_TOKEN. Зона не подменяется кругом по прямой.'}
+    failures = []
     async with httpx.AsyncClient(timeout=20) as client:
-        try:
-            response = await client.post('https://api.openrouteservice.org/v2/isochrones/'+profile,headers={'Authorization':key,'Content-Type':'application/json','Accept':'application/json'},json={'locations':[[lon,lat]],'range':[minutes*60],'range_type':'time','attributes':['area','reachfactor']})
-            response.raise_for_status(); data=response.json()
-            return {'available':True,'geojson':data,'source':'https://openrouteservice.org/dev/','mode':mode,'minutes':minutes}
-        except (httpx.HTTPError,ValueError) as exc:
-            return {'available':False,'reason':f'Сервис маршрутизации временно недоступен: {type(exc).__name__}'}
+        if ors_key:
+            profile = {'walking':'foot-walking','cycling':'cycling-regular'}[mode]
+            try:
+                response = await client.post('https://api.openrouteservice.org/v2/isochrones/'+profile,headers={'Authorization':ors_key,'Content-Type':'application/json','Accept':'application/json'},json={'locations':[[lon,lat]],'range':[minutes*60],'range_type':'time','attributes':['area','reachfactor']})
+                response.raise_for_status(); data=response.json()
+                return {'available':True,'geojson':data,'provider':'openrouteservice','source':'https://openrouteservice.org/dev/','mode':mode,'minutes':minutes}
+            except (httpx.HTTPError,ValueError) as exc:
+                failures.append(f'openrouteservice: {type(exc).__name__}')
+        if mapbox_token:
+            profile = {'walking':'walking','cycling':'cycling'}[mode]
+            try:
+                response = await client.get(
+                    f'https://api.mapbox.com/isochrone/v1/mapbox/{profile}/{lon},{lat}',
+                    params={'contours_minutes':str(minutes),'polygons':'true','access_token':mapbox_token})
+                response.raise_for_status(); data=response.json()
+                return {'available':True,'geojson':data,'provider':'mapbox','source':'https://docs.mapbox.com/api/navigation/isochrone/','mode':mode,'minutes':minutes,'attribution':'© Mapbox © OpenStreetMap'}
+            except (httpx.HTTPError,ValueError) as exc:
+                failures.append(f'mapbox: {type(exc).__name__}')
+    return {'available':False,'reason':'Сервис маршрутизации временно недоступен: ' + '; '.join(failures)}

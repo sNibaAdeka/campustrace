@@ -242,6 +242,46 @@ class Sources:
         )
         return data.get("photos", {}).get("photo", [])
 
+    async def mapbox_geocode(self, name: str, city: str | None, country_code: str | None) -> list[dict[str, Any]]:
+        """Second, independent geocoder used to cross-check the campus point.
+
+        Nominatim alone gives one unverified candidate and no way to tell a good
+        hit from a bad one. Two geocoders built from different data that agree
+        within a couple of kilometres are weak corroboration; two that disagree
+        are a signal to show both and claim nothing.
+        """
+        token = os.getenv("MAPBOX_TOKEN")
+        if not token:
+            return []
+        params: dict[str, Any] = {
+            "q": ", ".join(x for x in (name, city) if x), "limit": "3",
+            "types": "poi,address,place", "access_token": token,
+        }
+        if country_code:
+            params["country"] = country_code.lower()
+        data = await self.json("mapbox", "https://api.mapbox.com/search/geocode/v6/forward", params=params)
+        results = []
+        for feature in (data.get("features", []) if isinstance(data, dict) else []):
+            coordinates = (feature.get("geometry") or {}).get("coordinates") or []
+            properties = feature.get("properties") or {}
+            if len(coordinates) == 2 and all(isinstance(v, (int, float)) for v in coordinates):
+                results.append({
+                    "lat": coordinates[1], "lon": coordinates[0],
+                    "label": properties.get("full_address") or properties.get("name"),
+                    "kind": properties.get("feature_type"),
+                })
+        return results
+
+    async def mapbox_isochrone(self, lat: float, lon: float, profile: str, minutes: int) -> dict[str, Any]:
+        token = os.getenv("MAPBOX_TOKEN")
+        if not token:
+            return {}
+        data = await self.json(
+            "mapbox", f"https://api.mapbox.com/isochrone/v1/mapbox/{profile}/{lon},{lat}",
+            params={"contours_minutes": str(minutes), "polygons": "true", "access_token": token},
+        )
+        return data if isinstance(data, dict) else {}
+
     async def brave_pages(self, official_domain: str, name: str) -> list[dict[str, Any]]:
         key = os.getenv("BRAVE_API_KEY")
         if not key:

@@ -11,7 +11,7 @@ from app.pipeline import (
 )
 from app.integrations import Sources
 from app.main import profile as get_profile_endpoint
-from app.atlas import build_atlas, isochrone
+from app.atlas import build_atlas, crosscheck_points, isochrone
 from app.discovery import suggest
 from app.voices import _relevant, _groq_web_search
 import httpx
@@ -345,6 +345,50 @@ class CommonsPaginationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
 
 
+class GeocodeCrossCheckTests(unittest.TestCase):
+    """Mapbox is a second opinion on the map point, not a replacement basemap."""
+
+    def test_two_agreeing_providers_corroborate_the_point(self):
+        result = crosscheck_points([
+            {"provider": "Wikidata", "lat": 51.0900, "lon": 71.3994},
+            {"provider": "Mapbox", "lat": 51.0913, "lon": 71.4021},
+        ])
+        self.assertEqual(result["agreement"], "confirmed")
+        self.assertLess(result["max_distance_km"], 2)
+        # Corroborating a coordinate is not corroborating a photograph.
+        self.assertIn("не место съёмки", result["note"])
+
+    def test_disagreeing_providers_do_not_pick_a_winner(self):
+        result = crosscheck_points([
+            {"provider": "Wikidata", "lat": 51.09, "lon": 71.40},
+            {"provider": "Mapbox", "lat": 51.50, "lon": 71.40},
+        ])
+        self.assertEqual(result["agreement"], "conflict")
+        self.assertEqual(len(result["points"]), 2)
+
+    def test_single_provider_is_labelled_as_unchecked(self):
+        result = crosscheck_points([{"provider": "Mapbox", "lat": 1.0, "lon": 2.0}])
+        self.assertEqual(result["agreement"], "single_source")
+
+    def test_no_provider_means_no_point(self):
+        self.assertEqual(crosscheck_points([])["agreement"], "unavailable")
+        self.assertEqual(crosscheck_points([{"provider": "x", "lat": None, "lon": None}])["points"], [])
+
+
+class IsochroneProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_mapbox_token_alone_is_enough_to_offer_the_zone(self):
+        with patch.dict(os.environ, {"OPENROUTESERVICE_API_KEY": "", "MAPBOX_TOKEN": ""}):
+            unavailable = await isochrone(51.09, 71.4, "walking", 15)
+        self.assertFalse(unavailable["available"])
+        self.assertIn("MAPBOX_TOKEN", unavailable["reason"])
+
+    async def test_invalid_mode_is_refused_before_any_key_check(self):
+        with patch.dict(os.environ, {"MAPBOX_TOKEN": "x"}):
+            result = await isochrone(51.09, 71.4, "teleport", 15)
+        self.assertFalse(result["available"])
+        self.assertNotIn("geojson", result)
+
+
 class DescriptionTests(unittest.TestCase):
     """Case requirement 7: describe the campus from sources, or say nothing."""
 
@@ -365,8 +409,10 @@ class DescriptionTests(unittest.TestCase):
         result = describe_campus(institution, assets, counts, status)
         self.assertIn("библиотеки — 1", result["text"])
         self.assertIn("2015–2021", result["text"])
+        # A source that died is reported separately from a confirmed absence.
         self.assertIn("Не проверено из-за недоступности источника: общежития", result["text"])
-        self.assertNotIn("общежития.", result["text"].split("Проверено и не найдено")[-1].split(".")[0] + ".")
+        confirmed_empty = result["text"].split("Проверено и не найдено открытых материалов: ")[1]
+        self.assertNotIn("общежития", confirmed_empty.split(".")[0])
         self.assertEqual({fact["category"] for fact in result["facts"]}, {"campus", "library"})
 
     def test_no_material_means_no_invented_description(self):

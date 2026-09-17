@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
-from .atlas import build_atlas, isochrone, enrich_osm
+from .atlas import build_atlas, campus_geocode_crosscheck, isochrone, enrich_osm
 from .discovery import suggest, SEEDS
 from .integrations import SourceError, Sources, official_youtube_channel
 from .pipeline import VERSION as PIPELINE_VERSION, build_profile, institution_summary, latest_student_count, norm
@@ -87,7 +87,10 @@ async def integrations() -> dict[str, Any]:
             "YouTube Data API": bool(os.getenv("YOUTUBE_API_KEY")),
             "openrouteservice": bool(os.getenv("OPENROUTESERVICE_API_KEY")),
             "Groq research": bool(os.getenv("GROQ_API_KEY")),
+            "Grok vision (xAI)": bool(os.getenv("GROK_API_KEY")),
+            "Mapbox": bool(os.getenv("MAPBOX_TOKEN")),
         },
+        "basemap": "MapLibre GL + OpenFreeMap (no key required); Mapbox is an optional cross-check only.",
         "note": "Source discovery does not grant permission to republish a photo.",
     }
 
@@ -252,24 +255,24 @@ async def extras(ror_id: str) -> dict[str, Any]:
             result["warnings"].append(f"Open-Meteo: {exc.detail}")
 
     async def campus_candidate() -> None:
-        if institution.get('campus_coordinates'):
-            point = institution['campus_coordinates']
-            result['campus_candidate'] = {**point, 'display_name':institution['name'], 'status':'institution_point', 'warning':'Координата университета из Wikidata; границы корпусов уточняются отдельно.'}
+        # One geocoder gives an unverified guess with no way to judge it. We ask
+        # every provider we have (Wikidata, Nominatim, optionally Mapbox) and
+        # report whether they agree — corroboration of a point on a map, never
+        # evidence about where a photograph was taken.
+        crosscheck = await campus_geocode_crosscheck(sources, institution)
+        result["geocode_crosscheck"] = crosscheck
+        result["warnings"].extend(crosscheck.pop("warnings", []))
+        if not crosscheck["points"]:
             return
-        if not institution.get("city"):
-            return
-        try:
-            data = await sources.nominatim(institution["name"], institution["city"])
-            if data:
-                item = data[0]
-                result["campus_candidate"] = {
-                    "display_name": item.get("display_name"), "lat": item.get("lat"),
-                    "lon": item.get("lon"), "osm_type": item.get("osm_type"),
-                    "osm_id": item.get("osm_id"), "status": "unverified_map_candidate",
-                    "warning": "Точка карты требует подтверждения; это не геодоказательство для фотографий.",
-                }
-        except SourceError as exc:
-            result["warnings"].append(f"Nominatim: {exc.detail}")
+        best = crosscheck["points"][0]
+        result["campus_candidate"] = {
+            "display_name": best.get("label") or institution["name"],
+            "lat": best["lat"], "lon": best["lon"],
+            "provider": best["provider"], "source_url": best.get("source_url"),
+            "status": "cross_checked" if crosscheck["agreement"] == "confirmed" else "unverified_map_candidate",
+            "agreement": crosscheck["agreement"],
+            "warning": crosscheck["note"],
+        }
 
     async def videos() -> None:
         channel_id = official_youtube_channel(ror_id) or institution.get('youtube_channel')
