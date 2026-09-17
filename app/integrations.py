@@ -143,13 +143,28 @@ class Sources:
         )
         return data.get("entities", {}).get(qid, {}).get("claims", {}).get("P2196", [])
 
-    async def commons_category(self, name: str, limit: int = 100) -> list[dict[str, Any]]:
-        data = await self.json(
-            "commons", "https://commons.wikimedia.org/w/api.php",
-            params={"action": "query", "list": "categorymembers", "cmtitle": f"Category:{name}",
-                    "cmtype": "file|subcat", "cmlimit": str(limit), "format": "json"},
-        )
-        return data.get("query", {}).get("categorymembers", [])
+    async def commons_category(self, name: str, limit: int = 100, pages: int = 1) -> list[dict[str, Any]]:
+        """Category members, optionally following the API's own continuation.
+
+        P1.5: a single request returns at most one page in *alphabetical* order,
+        so a university with a large category was cut off at "B" and its
+        dormitory and lecture-hall files were never even considered. MediaWiki
+        exposes ``cmcontinue`` exactly for this; each extra page costs one more
+        rate-limited request, so the caller decides how many it can afford.
+        """
+        members: list[dict[str, Any]] = []
+        params: dict[str, Any] = {
+            "action": "query", "list": "categorymembers", "cmtitle": f"Category:{name}",
+            "cmtype": "file|subcat", "cmlimit": str(limit), "format": "json",
+        }
+        for _ in range(max(1, pages)):
+            data = await self.json("commons", "https://commons.wikimedia.org/w/api.php", params=params)
+            members.extend(data.get("query", {}).get("categorymembers", []))
+            cursor = (data.get("continue") or {}).get("cmcontinue")
+            if not cursor:
+                break
+            params = {**params, "cmcontinue": cursor}
+        return members
 
     async def commons_search(self, query: str, limit: int = 30) -> list[dict[str, Any]]:
         data = await self.json(

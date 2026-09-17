@@ -4,8 +4,12 @@ import unittest
 from unittest.mock import patch
 from unittest.mock import AsyncMock
 
-from app import db
-from app.pipeline import commons_asset, deduplicate, institution_summary, latest_student_count, thumbnail_hashes, _hashable_host
+from app import db, vision
+from app.pipeline import (
+    classify, commons_asset, deduplicate, describe_campus, institution_summary,
+    known_name_in_text, latest_student_count, thumbnail_hashes, _hashable_host,
+)
+from app.integrations import Sources
 from app.main import profile as get_profile_endpoint
 from app.atlas import build_atlas, isochrone
 from app.discovery import suggest
@@ -206,6 +210,172 @@ class AtlasAndSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(atlas["boundary"]["geometry"]["type"], "Polygon")
         self.assertEqual(len(atlas["walk_stops"]), 7)
         self.assertTrue(all(stop["source_url"].startswith("https://www.openstreetmap.org/way/") for stop in atlas["walk_stops"]))
+
+
+class SceneClassificationTests(unittest.TestCase):
+    """P0.3: 'campus' was the default bucket, so ceremonies became campus views."""
+
+    def setUp(self):
+        self.institution = institution_summary(RECORD)
+
+    def test_event_words_are_not_published_as_campus_views(self):
+        for title in ("Senate of the University of Tartu",
+                      "Concert in the university aula",
+                      "Signing of a memorandum at the university"):
+            category, _tags, why = classify(title)
+            self.assertEqual(category, "unknown", title)
+            self.assertEqual(why, "event_word", title)
+
+    def test_photo_without_any_scene_word_is_unknown_not_campus(self):
+        self.assertEqual(classify("Tartu 2013 DSC 4471")[0], "unknown")
+
+    def test_real_place_words_still_classify(self):
+        self.assertEqual(classify("Nazarbayev University main building")[0], "campus")
+        self.assertEqual(classify("University library reading room")[0], "library")
+        self.assertEqual(classify("Student dormitory block C")[0], "dormitory")
+
+    def test_unknown_asset_is_marked_unknown_not_probable(self):
+        asset = commons_asset(page("Senate of Nazarbayev University.jpg"), self.institution, "category")
+        self.assertEqual(asset["category"], "unknown")
+        self.assertEqual(asset["status"], "unknown")
+        self.assertTrue(any("не распознана" in reason for reason in asset["reasons"]))
+
+    def test_subcategory_provenance_rescues_an_unreadable_filename(self):
+        asset = commons_asset(page("DSC 00421.jpg"), self.institution,
+                              "category_sub:Nazarbayev University Library")
+        self.assertEqual(asset["category"], "library")
+
+    def test_short_official_acronym_is_matched_as_a_whole_word(self):
+        # P1.4: the old five-character rule discarded MIT, NYU, LSE, KTH.
+        self.assertTrue(known_name_in_text("MIT Great Dome at dusk", ["MIT"]))
+        self.assertFalse(known_name_in_text("Summit of rectors", ["MIT"]))
+        self.assertFalse(known_name_in_text("Blacksmith workshop", ["MIT"]))
+
+
+class VisualClassifierTests(unittest.TestCase):
+    """The visual layer is a second opinion; it must never quietly raise trust."""
+
+    def asset(self, category="campus", status="probable"):
+        return {"id": "a", "category": category, "status": status, "reasons": [],
+                "title": "x", "source_url": "https://commons.wikimedia.org/x"}
+
+    def test_disagreement_lowers_confidence_instead_of_overwriting_text(self):
+        asset = self.asset("campus")
+        agreement = vision.reconcile(asset, {"scene": "library", "confidence": 0.9, "note": ""})
+        self.assertEqual(agreement, "conflict")
+        self.assertEqual(asset["status"], "unknown")
+        self.assertEqual(asset["category"], "campus")
+
+    def test_agreement_is_recorded_but_status_stays_probable(self):
+        asset = self.asset("library")
+        agreement = vision.reconcile(asset, {"scene": "library", "confidence": 0.9, "note": ""})
+        self.assertEqual(agreement, "confirmed")
+        self.assertEqual(asset["status"], "probable")
+        self.assertNotIn("drop", asset)
+
+    def test_irrelevant_image_is_dropped(self):
+        asset = self.asset("campus")
+        vision.reconcile(asset, {"scene": "not_relevant", "confidence": 0.95, "note": "medal"})
+        self.assertTrue(asset["drop"])
+
+    def test_hesitant_model_cannot_be_the_only_reason_to_delete(self):
+        asset = self.asset("campus")
+        agreement = vision.reconcile(asset, {"scene": "not_relevant", "confidence": 0.2, "note": ""})
+        self.assertNotIn("drop", asset)
+        self.assertEqual(asset["status"], "unknown")
+        self.assertTrue(agreement.endswith("low_confidence"))
+
+    def test_vision_fills_a_category_the_text_could_not_give(self):
+        asset = self.asset("unknown", "unknown")
+        agreement = vision.reconcile(asset, {"scene": "campus_exterior", "confidence": 0.8, "note": ""})
+        self.assertEqual(agreement, "vision_only")
+        self.assertEqual(asset["category"], "campus")
+        self.assertTrue(any("только визуальным" in reason for reason in asset["reasons"]))
+
+    def test_street_view_is_demoted_to_city_context(self):
+        asset = self.asset("campus")
+        vision.reconcile(asset, {"scene": "city_not_campus", "confidence": 0.8, "note": ""})
+        self.assertEqual((asset["category"], asset["status"]), ("city", "city_context"))
+
+    def test_model_prose_outside_the_vocabulary_is_rejected(self):
+        self.assertIsNone(vision._parse("The photo shows a lovely campus."))
+        self.assertIsNone(vision._parse('{"scene":"anything_goes","confidence":1}'))
+        self.assertEqual(vision._parse('noise {"scene":"library","confidence":0.7} noise')["scene"], "library")
+
+    def test_layer_is_a_no_op_without_a_key(self):
+        with patch.dict(os.environ, {"GROK_API_KEY": ""}):
+            stats = EvidenceTests.loop_run(vision.annotate([{"id": "a", "image_url": "https://x/y.jpg"}]))
+        self.assertFalse(stats["available"])
+        self.assertEqual(stats["checked"], 0)
+
+
+class CommonsPaginationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_category_follows_cmcontinue_to_a_second_page(self):
+        # P1.5: one page is alphabetical, so a large category was cut off long
+        # before the dormitory and lecture-hall files.
+        responses = [
+            {"query": {"categorymembers": [{"title": "File:A.jpg", "ns": 6}]},
+             "continue": {"cmcontinue": "page-2"}},
+            {"query": {"categorymembers": [{"title": "File:Z.jpg", "ns": 6}]}},
+        ]
+        seen = []
+        sources = Sources()
+        try:
+            async def fake_json(provider, url, *, params=None, headers=None):
+                seen.append((params or {}).get("cmcontinue"))
+                return responses[len(seen) - 1]
+            with patch.object(sources, "json", fake_json):
+                members = await sources.commons_category("Example", limit=500, pages=2)
+        finally:
+            await sources.close()
+        self.assertEqual([m["title"] for m in members], ["File:A.jpg", "File:Z.jpg"])
+        self.assertEqual(seen, [None, "page-2"])
+
+    async def test_single_page_request_does_not_continue(self):
+        sources = Sources()
+        calls = []
+        try:
+            async def fake_json(provider, url, *, params=None, headers=None):
+                calls.append(1)
+                return {"query": {"categorymembers": []}, "continue": {"cmcontinue": "more"}}
+            with patch.object(sources, "json", fake_json):
+                await sources.commons_category("Example", pages=1)
+        finally:
+            await sources.close()
+        self.assertEqual(len(calls), 1)
+
+
+class DescriptionTests(unittest.TestCase):
+    """Case requirement 7: describe the campus from sources, or say nothing."""
+
+    def test_description_names_found_objects_and_separates_gap_reasons(self):
+        institution = institution_summary(RECORD)
+        assets = [
+            {"category": "library", "title": "Main library.jpg", "captured_at": "2015-05-01",
+             "published_at": None, "source_url": "https://commons.wikimedia.org/1",
+             "license": "CC BY-SA 4.0", "author": "A"},
+            {"category": "campus", "title": "Block 7.jpg", "captured_at": "2021-09-01",
+             "published_at": None, "source_url": "https://commons.wikimedia.org/2",
+             "license": "CC BY 4.0", "author": "B"},
+        ]
+        counts = {"campus": 1, "library": 1, "dormitory": 0, "classroom": 0,
+                  "sports": 0, "laboratories": 0, "student_life": 0, "city": 0}
+        status = {**{k: "has_results" if v else "empty_confirmed" for k, v in counts.items()},
+                  "dormitory": "source_failed"}
+        result = describe_campus(institution, assets, counts, status)
+        self.assertIn("библиотеки — 1", result["text"])
+        self.assertIn("2015–2021", result["text"])
+        self.assertIn("Не проверено из-за недоступности источника: общежития", result["text"])
+        self.assertNotIn("общежития.", result["text"].split("Проверено и не найдено")[-1].split(".")[0] + ".")
+        self.assertEqual({fact["category"] for fact in result["facts"]}, {"campus", "library"})
+
+    def test_no_material_means_no_invented_description(self):
+        institution = institution_summary(RECORD)
+        counts = dict.fromkeys(
+            ("campus", "dormitory", "classroom", "library", "sports", "laboratories", "student_life", "city"), 0)
+        result = describe_campus(institution, [], counts, dict.fromkeys(counts, "empty_confirmed"))
+        self.assertIn("не удалось", result["text"])
+        self.assertEqual(result["facts"], [])
 
 
 if __name__ == "__main__":

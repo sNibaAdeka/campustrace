@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,13 @@ from .voices import student_voices
 
 BASE = Path(__file__).resolve().parents[1]
 ROR_ID = re.compile(r"^[0-9a-z]{9}$")
+# P1.3: the case allows 30 seconds from submit to a useful result. The budget
+# below covers the *whole* server side of that, including the ROR lookup that
+# used to sit outside the measured window, and leaves headroom for transfer.
+PROFILE_BUDGET_SECONDS = float(os.getenv("PROFILE_BUDGET_SECONDS", "26"))
+# P1.9: two visitors asking for the same university must not run two identical
+# pipelines against Wikimedia. The second one waits for the first result.
+_inflight: dict[str, asyncio.Task] = {}
 
 
 def load_local_env() -> None:
@@ -132,10 +140,30 @@ async def profile(ror_id: str, refresh: bool = False) -> dict[str, Any]:
         cached["from_cache"] = True
         return cached
 
+    existing = _inflight.get(ror_id)
+    if existing is not None and not existing.done():
+        return await asyncio.shield(existing)
+    task = asyncio.ensure_future(_build(ror_id, cached))
+    _inflight[ror_id] = task
+    try:
+        return await asyncio.shield(task)
+    finally:
+        if _inflight.get(ror_id) is task and task.done():
+            _inflight.pop(ror_id, None)
+
+
+async def _build(ror_id: str, cached: dict[str, Any] | None) -> dict[str, Any]:
+    started = time.monotonic()
+    deadline = started + PROFILE_BUDGET_SECONDS
     sources = Sources()
     try:
-        record = await sources.ror_get(ror_id)
-        result = await asyncio.wait_for(build_profile(sources, record), timeout=28)
+        # The identity lookup is part of the user's wait, so it is inside both
+        # the measured elapsed time and the 30-second budget.
+        record = await asyncio.wait_for(sources.ror_get(ror_id), timeout=max(1.0, deadline - time.monotonic()))
+        result = await asyncio.wait_for(
+            build_profile(sources, record, started=started, deadline=deadline),
+            timeout=max(1.0, deadline - time.monotonic()),
+        )
         if not result["assets"] and result["warnings"]:
             if cached and cached["assets"]:
                 cached["from_cache"] = True
@@ -178,6 +206,13 @@ async def extras(ror_id: str) -> dict[str, Any]:
     if not profile_data:
         raise HTTPException(404, "Build the profile first")
     institution = profile_data["institution"]
+    # P1.6: /extras used to re-hit OpenAlex, Wikidata, Open-Meteo and Nominatim
+    # on every profile open. During judging that is a reliable way to earn a 429
+    # from a public service that asks us to be polite.
+    extras_key = f"extras:v2:{ror_id}"
+    remembered = db.get_cached(extras_key)
+    if remembered is not None:
+        return {**remembered, "from_cache": True}
     sources = Sources()
     result: dict[str, Any] = {"research": None, "students": None, "weather": None, "campus_candidate": None,
                               "videos": [], "official_page_leads": [], "warnings": []}
@@ -272,7 +307,10 @@ async def extras(ror_id: str) -> dict[str, Any]:
     await asyncio.gather(research(), students(), climate(), campus_candidate(), videos(), page_leads())
     result["source_events"] = sources.events
     await sources.close()
-    return result
+    # Weather is the only short-lived field here; an hour keeps it honest while
+    # still shielding the slower registries from repeated identical questions.
+    db.set_cached(extras_key, result, 3600)
+    return {**result, "from_cache": False}
 
 
 @app.get("/api/profiles/{ror_id}/student-voices")
@@ -295,9 +333,25 @@ async def compare(left: str, right: str) -> dict[str, Any]:
         if not item:
             raise HTTPException(404, f"Build profile {value} first")
         profiles.append(item)
+    # P1.8: a comparison that hides three of the eight categories, or puts a
+    # "0" produced by a dead source next to a genuine "0", is not a comparison.
+    comparable = all(p.get("profile_status", "complete") == "complete" for p in profiles)
     return {
-        "profiles": [{"institution": p["institution"], "coverage": p["coverage"],
-                      "asset_count": len(p["assets"]), "generated_at": p["generated_at"],
-                      "caveat": "Количество фото отражает покрытие источников, а не качество университета."}
-                     for p in profiles]
+        "categories": ["campus", "dormitory", "classroom", "library", "sports",
+                       "laboratories", "student_life", "city"],
+        "comparable": comparable,
+        "profiles": [{
+            "institution": p["institution"], "coverage": p["coverage"],
+            "category_status": p.get("category_status", {}),
+            "unclassified_count": p.get("unclassified_count", 0),
+            "profile_status": p.get("profile_status", "complete"),
+            "pipeline_version": p.get("pipeline_version"),
+            "asset_count": len(p["assets"]), "generated_at": p["generated_at"],
+            "cache_age_seconds": p.get("cache_age_seconds"),
+            "visual_check": (p.get("vision") or {}).get("available", False),
+            "caveat": "Количество фото отражает покрытие источников, а не качество университета.",
+        } for p in profiles],
+        "caveat": ("Оба профиля собраны полностью, методика одинаковая." if comparable else
+                   "Минимум один профиль неполный: ноль в разделе может означать недоступность "
+                   "источника, а не отсутствие материалов. Сравнивайте с осторожностью."),
     }

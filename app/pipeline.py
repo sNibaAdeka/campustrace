@@ -21,10 +21,11 @@ from urllib.parse import quote, urlparse
 
 from PIL import Image, UnidentifiedImageError
 
+from . import vision
 from .integrations import SourceError, Sources
 
 
-VERSION = "0.5.1"
+VERSION = "0.6.0"
 PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 EXCLUDED = (
     "logo", "logotype", "emblem", "coat of arms", "seal", "flag", "badge", "icon",
@@ -48,6 +49,24 @@ TAG_TERMS = {
     "student_life": ("student", "festival", "club", "graduation", "ras at", "resident assistant", "студент", "выпуск", "клуб"),
 }
 SUBCATEGORY_TERMS = ("building", "campus", "library", "dorm", "residence", "sport", "interior", "laborator", "college", "общежит", "здания")
+# P0.3: terms that describe an *event or an object*, not a place. Before this
+# list existed, "campus" was the default bucket, so an award badge, a concert,
+# a senate sitting and a graduation photo from the University of Tartu category
+# were all published as views of the campus.
+NON_SCENE_TERMS = (
+    "ceremony", "ceremonial", "tseremoonia", "церемон", "рәсім",
+    "concert", "kontsert", "концерт", "recital",
+    "senate", "senat", "сенат", "council meeting", "nõukogu",
+    "award", "auhin", "награжд", "вручен", "prize", "приз", "марапат",
+    "anniversary", "juubel", "юбилей", "jubilee",
+    "signing", "подписан", "memorandum", "меморандум",
+    "meeting", "koosolek", "заседан", "совещан", "митинг",
+    "press conference", "пресс-конференц", "interview", "интервью",
+    "speech", "выступлен", "kõne", "seminar", "семинар", "workshop",
+    "choir", "хор", "orchestra", "оркестр", "dance", "танц", "theatre", "театр",
+    "exhibition", "выставк", "näitus", "protest", "rally",
+    "funeral", "похорон", "grave", "могил", "monument to", "памятник",
+)
 SCENE_TERMS = (
     "campus", "building", "library", "библиотек", "библиоотек", "кітапхан",
     "dorm", "residence hall", "общежит", "жатақхан", "classroom", "lecture hall",
@@ -126,22 +145,29 @@ def institution_summary(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def classify(text: str, city_only: bool = False) -> tuple[str, list[str]]:
+def classify(text: str, city_only: bool = False) -> tuple[str, list[str], str]:
+    """Return (category, tags, why).
+
+    P0.3 fix: ``campus`` is no longer the fallback bucket. A candidate is only
+    called a campus view when the text actually names a place, and an event word
+    ("ceremony", "senate", "concert") vetoes the generic campus guess. Anything
+    we cannot place becomes ``unknown`` — which the UI shows as "needs checking"
+    rather than quietly presenting it as a photo of the university.
+    """
     if city_only:
-        return "city", []
+        return "city", [], "city_query"
     words = norm(text)
-    category = "campus"
+    tags = [key for key, terms in TAG_TERMS.items() if any(term in words for term in terms)]
     for key in ("dormitory", "library", "classroom"):
         if any(term in words for term in CATEGORY_TERMS[key]):
-            category = key
-            break
-    tags = [key for key, terms in TAG_TERMS.items() if any(term in words for term in terms)]
-    if category == "campus" and tags:
-        for key in ("laboratories", "sports", "student_life"):
-            if key in tags:
-                category = key
-                break
-    return category, tags
+            return key, tags, "specific_place_term"
+    for key in ("laboratories", "sports", "student_life"):
+        if key in tags:
+            return key, tags, "activity_term"
+    event_hit = any(term in words for term in NON_SCENE_TERMS)
+    if any(term in words for term in CATEGORY_TERMS["campus"]) and not event_hit:
+        return "campus", tags, "campus_term"
+    return "unknown", tags, "event_word" if event_hit else "no_scene_term"
 
 
 def valid_title(title: str) -> bool:
@@ -150,10 +176,23 @@ def valid_title(title: str) -> bool:
 
 
 def known_name_in_text(text: str, names: list[str]) -> bool:
+    """Does the text contain one of the institution's known names?
+
+    P1.4: the old rule required an alias of at least five characters, which
+    silently disqualified every short official acronym — MIT, NYU, LSE, KTH,
+    НУ. Those are matched as whole words instead of substrings, so "MIT" is
+    found in "MIT Great Dome" but not inside "summit" or "Smith".
+    """
     haystack = norm(text)
+    padded = f" {haystack} "
     for name in names:
         candidate = norm(name)
-        if len(candidate) >= 5 and candidate in haystack:
+        if not candidate:
+            continue
+        if len(candidate) >= 5:
+            if candidate in haystack:
+                return True
+        elif len(candidate) >= 2 and f" {candidate} " in padded:
             return True
     return False
 
@@ -260,8 +299,8 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str)
         return None
     if city_only and any(term in title.casefold() for term in ("district", "team", "cycling", "map", "administrative", "район", "карта", "équipe", "man shows", "person")):
         return None
-    category, tags = classify(title, city_only)
-    if scope.startswith("category_sub:") and category == "campus":
+    category, tags, text_evidence = classify(title, city_only)
+    if scope.startswith("category_sub:") and category in ("campus", "unknown"):
         subcategory = scope.split(":", 1)[1]
         if "library" in subcategory.casefold():
             category = "library"
@@ -271,6 +310,8 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str)
             category = "sports"
         elif "laborator" in subcategory.casefold():
             category = "laboratories"
+        if category != "unknown":
+            text_evidence = "subcategory_provenance"
     reasons = []
     if scope.startswith("category"):
         reasons.append("Файл находится в тематической категории Wikimedia Commons")
@@ -283,8 +324,14 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str)
     if not license_name:
         return None
     reasons.append(f"Лицензия указана: {license_name}")
+    if category == "unknown":
+        reasons.append(
+            "Сцена не распознана по тексту: в названии есть слово о событии, а не о месте"
+            if text_evidence == "event_word" else
+            "Сцена не распознана по тексту: название не содержит указания на тип объекта"
+        )
     # A Commons category and caption can have the same contributor; do not call this verified.
-    status = "city_context" if city_only else "probable"
+    status = "city_context" if city_only else "unknown" if category == "unknown" else "probable"
     raw_id = title.encode("utf-8")
     coordinates = next((c for c in page.get("coordinates", [])
                         if isinstance(c.get("lat"), (int, float)) and isinstance(c.get("lon"), (int, float))
@@ -304,7 +351,7 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str)
         "published_at": info.get("timestamp"),
         "captured_at": clean(meta.get("DateTimeOriginal")) or None,
         "sha1": info.get("sha1"), "dhash": None, "reasons": reasons,
-        "scope": scope,
+        "scope": scope, "text_evidence": text_evidence,
         "coordinates": {"lat": coordinates["lat"], "lon": coordinates["lon"],
                         "type": coordinates.get("type", "unknown")} if coordinates else None,
     }
@@ -315,10 +362,12 @@ def flickr_asset(item: dict[str, Any], institution: dict[str, Any]) -> dict[str,
     license_name = FLICKR_LICENSES.get(str(item.get("license")))
     if not license_name or not item.get("url_m") or not known_name_in_text(title, institution["aliases"]):
         return None
-    category, tags = classify(title)
+    category, tags, text_evidence = classify(title)
     return {
+        "text_evidence": text_evidence,
         "id": "flickr-" + str(item["id"]), "provider": "Flickr", "title": title,
-        "category": category, "tags": tags, "status": "probable",
+        "category": category, "tags": tags,
+        "status": "unknown" if category == "unknown" else "probable",
         "source_url": f"https://www.flickr.com/photos/{quote(str(item['owner']))}/{item['id']}/",
         "image_url": item["url_m"], "author": item.get("ownername") or item["owner"],
         "license": license_name, "license_url": None,
@@ -329,8 +378,106 @@ def flickr_asset(item: dict[str, Any], institution: dict[str, Any]) -> dict[str,
     }
 
 
-async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, Any]:
-    started = time.monotonic()
+CATEGORY_LABELS_RU = {
+    "campus": "кампус и корпуса", "dormitory": "общежития", "classroom": "аудитории",
+    "library": "библиотеки", "sports": "спорт", "laboratories": "лаборатории",
+    "student_life": "студенческая жизнь", "city": "город",
+}
+
+
+def _year(value: Any) -> int | None:
+    match = re.search(r"(19|20)\d{2}", str(value or ""))
+    return int(match.group(0)) if match else None
+
+
+def describe_campus(institution: dict[str, Any], assets: list[dict[str, Any]],
+                    counts: dict[str, int], category_status: dict[str, str]) -> dict[str, Any]:
+    """Case requirement 7: a short description built only from what we found.
+
+    Every sentence is derived from data already on the page — the objects that
+    have at least one licensed photograph, the years those photographs were
+    taken, and the gaps. Nothing here is generated prose about how good the
+    university is, because we have no source for that and the case forbids
+    dressing up a guess as a finding.
+    """
+    name = institution["name"]
+    place = ", ".join(x for x in (institution.get("city"), institution.get("country")) if x)
+    sentences: list[str] = []
+    facts: list[dict[str, Any]] = []
+
+    opening = f"{name} — университет в {place}." if place else f"{name}."
+    if institution.get("official_website"):
+        opening += f" Официальный сайт: {institution['official_website']}."
+    sentences.append(opening)
+
+    published = [a for a in assets if a["category"] not in ("city", "unknown")]
+    present = [(key, counts[key]) for key in CATEGORY_LABELS_RU if key != "city" and counts.get(key)]
+    if present:
+        listed = ", ".join(f"{CATEGORY_LABELS_RU[key]} — {count}" for key, count in present)
+        sentences.append(
+            f"Подтверждено лицензией и источником {len(published)} снимков по разделам: {listed}."
+        )
+        for key, count in present:
+            examples = [a for a in assets if a["category"] == key][:3]
+            facts.append({
+                "category": key, "label": CATEGORY_LABELS_RU[key], "count": count,
+                "examples": [{"title": a["title"], "source_url": a["source_url"],
+                              "license": a.get("license"), "author": a.get("author")}
+                             for a in examples],
+            })
+    else:
+        sentences.append(
+            "Ни одного снимка кампуса с подтверждённой открытой лицензией найти не удалось, "
+            "поэтому описание объектов не строится."
+        )
+
+    years = sorted(y for y in (_year(a.get("captured_at") or a.get("published_at")) for a in published) if y)
+    if len(years) >= 2 and years[0] != years[-1]:
+        sentences.append(f"Даты съёмки или загрузки материалов охватывают {years[0]}–{years[-1]} годы.")
+    elif years:
+        sentences.append(f"Все найденные материалы относятся к {years[0]} году.")
+
+    geotagged = [a for a in published if a.get("coordinates")]
+    if geotagged:
+        sentences.append(
+            f"У {len(geotagged)} кадров есть собственные геотеги Commons; остальные привязаны к вузу "
+            "только по источнику, а не по координате."
+        )
+
+    failed = [CATEGORY_LABELS_RU[key] for key, state in category_status.items()
+              if state == "source_failed" and key in CATEGORY_LABELS_RU]
+    empty = [CATEGORY_LABELS_RU[key] for key, state in category_status.items()
+             if state == "empty_confirmed" and key in CATEGORY_LABELS_RU]
+    if empty:
+        sentences.append(
+            "Проверено и не найдено открытых материалов: " + ", ".join(empty) + "."
+        )
+    if failed:
+        sentences.append(
+            "Не проверено из-за недоступности источника: " + ", ".join(failed) +
+            " — это не значит, что таких материалов нет."
+        )
+    return {"text": " ".join(sentences), "facts": facts}
+
+
+async def build_profile(
+    sources: Sources, record: dict[str, Any], *,
+    started: float | None = None, deadline: float | None = None,
+) -> dict[str, Any]:
+    # P1.3: the clock can be started by the caller *before* the ROR lookup, so
+    # elapsed_ms measures the user's wait and not just the part after identity
+    # resolution. ``deadline`` is an absolute monotonic instant: every expensive
+    # optional stage checks it instead of assuming it has the full budget.
+    started = time.monotonic() if started is None else started
+    stage_times: dict[str, int] = {}
+
+    def stage(name: str, since: float) -> None:
+        stage_times[name] = int((time.monotonic() - since) * 1000)
+
+    def budget_left() -> float:
+        return 1e9 if deadline is None else deadline - time.monotonic()
+
+    discovery_started = time.monotonic()
     institution = institution_summary(record)
     warnings: list[str] = []
     # P0.4: track which candidate-discovery sources failed/were cut short so
@@ -364,7 +511,11 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
         category_name = institution['name']
     if category_name:
         try:
-            members = await sources.commons_category(category_name, limit=500)
+            # Two pages of the main category whenever the budget allows: the
+            # first page alone is alphabetical and routinely stops before the
+            # dormitory/library files (P1.5).
+            members = await sources.commons_category(
+                category_name, limit=500, pages=2 if budget_left() > 14 else 1)
             for item in members:
                 if item.get("ns") == 6:
                     candidates[item["title"]] = "category"
@@ -399,6 +550,10 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
             f'"{institution["name"]}" (campus OR library OR students)',
         ]
         for query in visual_queries:
+            if budget_left() < 6:
+                incomplete_sources.append("commons_search")
+                warnings.append("Часть поисковых запросов Commons пропущена: не хватило времени в бюджете 30 секунд")
+                break
             try:
                 hits = await sources.commons_search(query, limit=30)
                 for hit in hits:
@@ -445,6 +600,7 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
             break
     scope_by_title = dict(selected)
     assets = [a for p in pages if (a := commons_asset(p, institution, scope_by_title.get(p.get("title", ""), "search")))]
+    first_asset_ms = int((time.monotonic() - started) * 1000) if assets else None
 
     flickr_candidates = 0
     if os.getenv("FLICKR_API_KEY"):
@@ -457,12 +613,17 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
         except SourceError as exc:
             warnings.append(f"Flickr: {exc.detail}"); incomplete_sources.append("flickr")
 
+    stage("discovery", discovery_started)
+
     # Prefer campus content, clearer names, and a spread of categories.
     assets.sort(key=lambda a: (
-        a["category"] == "city", a["scope"] == "search", a["scope"] == "flickr_search",
+        a["category"] == "city", a["category"] == "unknown",
+        a["scope"] == "search", a["scope"] == "flickr_search",
         not known_name_in_text(a["title"], institution["aliases"]),
     ))
+    hash_started = time.monotonic()
     hash_stats = await thumbnail_hashes(sources, assets)
+    stage("visual_hash", hash_started)
     license_eligible_count = len(assets)
     assets, duplicate_count = deduplicate(assets)
     unique_count = len(assets)
@@ -471,11 +632,38 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
         "кандидатов хешировано (perceptual hash)."
     )
     # Gallery breadth is a feature, provided the source and licence remain visible.
-    assets = [a for a in assets if a["category"] != "city"][:60] + [a for a in assets if a["category"] == "city"][:10]
+    assets = ([a for a in assets if a["category"] not in ("city", "unknown")][:60] +
+              [a for a in assets if a["category"] == "city"][:10] +
+              [a for a in assets if a["category"] == "unknown"][:14])
+
+    # Second, independent opinion on what the picture actually shows (P0.3).
+    # It runs after licence filtering and dedup so no quota is spent on images
+    # we could not publish anyway, and it never runs past the time budget.
+    vision_started = time.monotonic()
+    vision_stats = await vision.annotate(
+        assets, deadline=None if deadline is None else min(deadline, time.monotonic() + max(0.0, budget_left() - 2)))
+    stage("visual_classifier", vision_started)
+    rejected_by_vision = [a for a in assets if a.get("drop")]
+    assets = [a for a in assets if not a.pop("drop", False)]
+    if vision_stats["available"]:
+        warnings.append(
+            f"Независимая визуальная классификация ({vision_stats['model']}): проверено "
+            f"{vision_stats['checked']}, снято с публикации {vision_stats['rejected']}, "
+            f"расхождений с текстом {vision_stats['conflict']}."
+        )
+    else:
+        warnings.append(
+            "Независимая визуальная классификация не выполнена: не задан GROK_API_KEY. "
+            "Категории основаны только на тексте Commons."
+        )
 
     counts = {category: 0 for category in ("campus", "dormitory", "classroom", "library", "city", "sports", "laboratories", "student_life")}
+    unclassified_count = 0
     for asset in assets:
-        counts[asset["category"]] += 1
+        if asset["category"] in counts:
+            counts[asset["category"]] += 1
+        else:
+            unclassified_count += 1
     profile_status = "partial" if incomplete_sources else "complete"
     # A zero-count category is only "confirmed empty" if nothing that feeds it
     # failed mid-run; otherwise we honestly say we couldn't finish checking.
@@ -483,23 +671,33 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
         category: ("has_results" if count > 0 else ("source_failed" if incomplete_sources else "empty_confirmed"))
         for category, count in counts.items()
     }
-    name = institution["name"]
-    place = ", ".join(x for x in (institution.get("city"), institution.get("country")) if x)
-    summary = f"{name} — университет в {place}. " if place else f"{name}. "
-    summary += f"Найдено {len(assets)} материалов с указанными источниками и лицензиями. "
-    summary += "Связь каждого кадра с конкретным корпусом требует отдельного подтверждения; статусы и основания указаны в карточках."
+    description = describe_campus(institution, assets, counts, category_status)
+    stage_times["total"] = int((time.monotonic() - started) * 1000)
 
     return {
         "pipeline_version": VERSION, "generated_at": int(time.time()),
-        "elapsed_ms": int((time.monotonic()-started)*1000),
-        "institution": institution, "summary": summary, "assets": assets,
-        "coverage": counts, "candidate_count": len(candidates) + flickr_candidates,
+        "elapsed_ms": stage_times["total"],
+        "timings": stage_times,
+        "time_to_first_asset_ms": first_asset_ms,
+        "institution": institution, "summary": description["text"],
+        "campus_facts": description["facts"], "assets": assets,
+        "coverage": counts, "unclassified_count": unclassified_count,
+        "candidate_count": len(candidates) + flickr_candidates,
         "license_eligible_count": license_eligible_count,
         "unique_count": unique_count,
         "duplicate_count": duplicate_count, "warnings": warnings,
         "profile_status": profile_status,
         "category_status": category_status,
         "incomplete_sources": incomplete_sources,
+        "vision": vision_stats,
+        "rejected_by_vision": [{"title": a["title"], "source_url": a["source_url"],
+                                "scene": (a.get("vision") or {}).get("scene_label")}
+                               for a in rejected_by_vision],
         "source_events": sources.events.copy(),
-        "methodology": "Автоматический поиск в Wikimedia Commons и подключённых источниках; карточки без подтверждённой лицензии не публикуются. Статус 'вероятно' не означает доказанное местоположение.",
+        "methodology": (
+            "Автоматический поиск в Wikimedia Commons и подключённых источниках; карточки без "
+            "подтверждённой лицензии не публикуются. Категория проверяется двумя независимыми "
+            "слоями — текстом источника и визуальным классификатором; при расхождении уверенность "
+            "понижается. Статус «вероятно» не означает доказанное местоположение."
+        ),
     }
