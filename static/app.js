@@ -263,7 +263,11 @@ function renderCoverage() {
     row.append(node('td', labels[category]));
     const amount = node('td'); amount.append(node('span', count));
     const bar = node('div', null, 'bar'), fill = node('span'); fill.style.width = `${100 * count / Math.max(state.profile.assets.length, 1)}%`; bar.append(fill); amount.append(bar);
-    row.append(amount, node('td', count ? 'Есть материалы с источником' : 'Нет опубликованных кадров'));
+    const rawStatus = state.profile.category_status ? state.profile.category_status[category] : null;
+    const stateLabel = count ? 'Есть материалы с источником'
+      : rawStatus === 'source_failed' ? 'Не проверено: источник был недоступен'
+      : 'Проверено — материалов не найдено';
+    row.append(amount, node('td', stateLabel));
     table.append(row);
   }
   $('coverage').replaceChildren(table);

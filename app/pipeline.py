@@ -333,6 +333,10 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
     started = time.monotonic()
     institution = institution_summary(record)
     warnings: list[str] = []
+    # P0.4: track which candidate-discovery sources failed/were cut short so
+    # an empty category can be reported honestly as "not confirmed empty"
+    # rather than looking identical to "genuinely searched, nothing found".
+    incomplete_sources: list[str] = []
     candidates: dict[str, str] = {}
     category_name = None
     details = {}
@@ -354,7 +358,7 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
             for value in values('P18')[:3]:
                 if isinstance(value,str): candidates['File:'+value] = 'category'
         except SourceError as exc:
-            warnings.append(f"Wikidata: {exc.detail}")
+            warnings.append(f"Wikidata: {exc.detail}"); incomplete_sources.append("wikidata")
 
     if not category_name:
         category_name = institution['name']
@@ -380,9 +384,9 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
                                 if item.get("ns") == 6:
                                     candidates.setdefault(item["title"], f"category_sub:{child}")
                 except SourceError as exc:
-                    warnings.append(f"Commons {subcat}: {exc.detail}")
+                    warnings.append(f"Commons {subcat}: {exc.detail}"); incomplete_sources.append(f"commons_subcat:{subcat}")
         except SourceError as exc:
-            warnings.append(f"Commons category: {exc.detail}")
+            warnings.append(f"Commons category: {exc.detail}"); incomplete_sources.append("commons_category")
 
     # One category is rarely enough. Search several visual intents while retaining
     # the same conservative title/license filter below.
@@ -400,7 +404,7 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
                 for hit in hits:
                     candidates.setdefault(hit["title"], "search")
             except SourceError as exc:
-                warnings.append(f"Commons search: {exc.detail}")
+                warnings.append(f"Commons search: {exc.detail}"); incomplete_sources.append("commons_search")
 
     # Use the institution's linked encyclopedia article when Commons search has
     # sparse coverage. Only files that also have Commons licence metadata survive.
@@ -414,7 +418,7 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
                     for image in page.get('images',[]):
                         candidates.setdefault(image['title'],'category_sub:'+institution['name'])
             except SourceError as exc:
-                warnings.append(f'Wikipedia: {exc.detail}')
+                warnings.append(f'Wikipedia: {exc.detail}'); incomplete_sources.append('wikipedia')
             break
 
     # City search is explicitly a different claim from a campus photograph.
@@ -424,7 +428,7 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
             for hit in hits:
                 candidates.setdefault(hit["title"], "city")
         except SourceError as exc:
-            warnings.append(f"Commons city: {exc.detail}")
+            warnings.append(f"Commons city: {exc.detail}"); incomplete_sources.append("commons_city")
 
     groups = {key: [(title, scope) for title, scope in candidates.items()
                     if (scope.startswith("category_sub:") if key == "category_sub" else scope == key)
@@ -437,7 +441,7 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
         try:
             pages.extend(await sources.commons_imageinfo([t for t, _ in selected[start:start+50]]))
         except SourceError as exc:
-            warnings.append(f"Commons metadata: {exc.detail}")
+            warnings.append(f"Commons metadata: {exc.detail}"); incomplete_sources.append("commons_metadata")
             break
     scope_by_title = dict(selected)
     assets = [a for p in pages if (a := commons_asset(p, institution, scope_by_title.get(p.get("title", ""), "search")))]
@@ -451,7 +455,7 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
                 if asset := flickr_asset(item, institution):
                     assets.append(asset)
         except SourceError as exc:
-            warnings.append(f"Flickr: {exc.detail}")
+            warnings.append(f"Flickr: {exc.detail}"); incomplete_sources.append("flickr")
 
     # Prefer campus content, clearer names, and a spread of categories.
     assets.sort(key=lambda a: (
@@ -472,6 +476,13 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
     counts = {category: 0 for category in ("campus", "dormitory", "classroom", "library", "city", "sports", "laboratories", "student_life")}
     for asset in assets:
         counts[asset["category"]] += 1
+    profile_status = "partial" if incomplete_sources else "complete"
+    # A zero-count category is only "confirmed empty" if nothing that feeds it
+    # failed mid-run; otherwise we honestly say we couldn't finish checking.
+    category_status = {
+        category: ("has_results" if count > 0 else ("source_failed" if incomplete_sources else "empty_confirmed"))
+        for category, count in counts.items()
+    }
     name = institution["name"]
     place = ", ".join(x for x in (institution.get("city"), institution.get("country")) if x)
     summary = f"{name} — университет в {place}. " if place else f"{name}. "
@@ -486,6 +497,9 @@ async def build_profile(sources: Sources, record: dict[str, Any]) -> dict[str, A
         "license_eligible_count": license_eligible_count,
         "unique_count": unique_count,
         "duplicate_count": duplicate_count, "warnings": warnings,
+        "profile_status": profile_status,
+        "category_status": category_status,
+        "incomplete_sources": incomplete_sources,
         "source_events": sources.events.copy(),
         "methodology": "Автоматический поиск в Wikimedia Commons и подключённых источниках; карточки без подтверждённой лицензии не публикуются. Статус 'вероятно' не означает доказанное местоположение.",
     }
