@@ -1,0 +1,2 @@
+"""CampusTrace MVP backend."""
+
