@@ -5,9 +5,12 @@ const searchTimers = {};
 let profileSequence = 0;
 let loaderTimer = null;
 let loaderExitTimer = null;
-const labels = { campus: 'Кампус', dormitory: 'Общежитие', classroom: 'Аудитории', library: 'Библиотека', city: 'Город', sports: 'Спорт', laboratories: 'Лаборатории', student_life: 'Студенческая жизнь' };
+const labels = { campus: 'Кампус', dormitory: 'Общежитие', classroom: 'Аудитории', library: 'Библиотека', city: 'Город', sports: 'Спорт', laboratories: 'Лаборатории', student_life: 'Студенческая жизнь', unknown: 'Требует проверки' };
 const categories = ['campus', 'dormitory', 'classroom', 'library', 'city', 'sports', 'laboratories', 'student_life'];
-const filters = ['all', ...categories];
+// 'unknown' is deliberately a visible bucket rather than a silent deletion: the
+// material has a real source and licence, we simply cannot say what it shows.
+const filters = ['all', ...categories, 'unknown'];
+const statusLabels = { city_context: 'Городской контекст', probable: 'Вероятно', unknown: 'Не подтверждено' };
 
 function node(tag, text, cls) {
   const item = document.createElement(tag);
@@ -193,9 +196,54 @@ function renderProfile() {
   $('institution-meta').replaceChildren(node('span', [inst.city, inst.country].filter(Boolean).join(', ') + ' · '));
   if (inst.official_website) $('institution-meta').append(link('Официальный сайт', inst.official_website));
   $('summary').textContent = p.summary;
-  $('profile-meta').textContent = `ROR: ${inst.ror_id} · кандидатов: ${p.candidate_count} · показано: ${p.assets.length} · удалено дублей: ${p.duplicate_count} · обновлено: ${new Date(p.generated_at * 1000).toLocaleString('ru-RU')}`;
+  const parts = [`ROR: ${inst.ror_id}`, `кандидатов: ${p.candidate_count}`,
+    `показано: ${p.assets.length}`, `удалено дублей: ${p.duplicate_count}`];
+  if (p.vision?.available) parts.push(`визуально проверено: ${p.vision.checked}`);
+  if (typeof p.elapsed_ms === 'number') parts.push(`собрано за ${(p.elapsed_ms / 1000).toFixed(1)} с`);
+  parts.push(`обновлено: ${new Date(p.generated_at * 1000).toLocaleString('ru-RU')}`);
+  $('profile-meta').textContent = parts.join(' · ');
   $('warnings').replaceChildren(...(p.warnings || []).map(w => node('p', w)));
+  renderProfileStatus(); renderFacts();
   renderFilters(); renderGallery(); renderCoverage(); renderFunnel();
+}
+
+function renderProfileStatus() {
+  const p = state.profile, holder = $('profile-status');
+  if (!holder) return;
+  holder.replaceChildren();
+  const partial = p.profile_status === 'partial';
+  holder.dataset.state = partial ? 'partial' : 'complete';
+  holder.append(node('strong', partial ? 'Профиль неполный' : 'Профиль собран полностью'));
+  holder.append(node('span', partial
+    ? 'Часть источников не ответила, поэтому ноль в разделе не означает отсутствие материалов.'
+    : 'Все подключённые источники ответили; нули ниже — это проверенное отсутствие материалов.'));
+  const check = p.vision?.available
+    ? `Независимая визуальная проверка: ${p.vision.model}.`
+    : 'Независимая визуальная проверка не выполнена (не задан ключ) — категории основаны только на тексте источника.';
+  holder.append(node('span', check));
+}
+
+// Case requirement 7: the description is assembled from what was actually
+// found, and each object it names links to the file that justifies it.
+function renderFacts() {
+  const holder = $('campus-facts');
+  if (!holder) return;
+  holder.replaceChildren();
+  const facts = state.profile.campus_facts || [];
+  if (!facts.length) return;
+  for (const fact of facts) {
+    const article = node('article', null, 'fact-card');
+    article.append(node('h4', `${fact.label} · ${fact.count}`));
+    const list = node('ul');
+    for (const example of fact.examples || []) {
+      const row = node('li');
+      row.append(link(example.title, example.source_url));
+      row.append(node('span', ` — ${example.license || 'лицензия не указана'}`, 'hint'));
+      list.append(row);
+    }
+    article.append(list);
+    holder.append(article);
+  }
 }
 
 function renderFilters() {
@@ -221,9 +269,26 @@ function renderGallery() {
     image.addEventListener('error', () => image.replaceWith(node('div', 'Превью недоступно. Источник можно открыть в паспорте материала.', 'image-fallback')), { once: true });
     const body = node('div', null, 'card-body');
     const topline = node('div', null, 'card-topline');
-    topline.append(node('span', labels[item.category] || item.category, 'card-type'), node('span', item.status === 'city_context' ? 'Городской контекст' : 'Вероятно', `pill ${item.status}`));
+    topline.append(node('span', labels[item.category] || item.category, 'card-type'),
+                   node('span', statusLabels[item.status] || item.status, `pill ${item.status}`));
     body.append(topline, node('h4', item.title), node('p', item.provider, 'card-meta'));
-    body.append(node('p', `${item.author || 'Автор не указан'} · ${item.license || 'Лицензия не указана'}`, 'card-credit'));
+    // P1.7: the credit line belongs next to the image, not only inside a dialog.
+    // Several Commons licences require attribution wherever the file is shown.
+    const credit = node('p', null, 'card-credit');
+    credit.append(node('span', item.author || 'Автор не указан'), node('span', ' · '));
+    credit.append(item.license_url ? link(item.license || 'Лицензия', item.license_url)
+                                   : node('span', item.license || 'Лицензия не указана'));
+    credit.append(node('span', ' · '), link('источник', item.source_url));
+    body.append(credit);
+    if (item.vision?.available) {
+      const agreement = String(item.vision.agreement || '');
+      const tone = agreement.startsWith('confirmed') ? 'confirmed'
+        : agreement.startsWith('conflict') ? 'conflict' : 'partial';
+      const text = tone === 'confirmed' ? `Изображение проверено: ${item.vision.scene_label}`
+        : tone === 'conflict' ? `Расхождение с текстом: видно «${item.vision.scene_label}»`
+        : `Категория только по изображению: ${item.vision.scene_label}`;
+      body.append(node('p', text, `vision-badge ${tone}`));
+    }
     const button = node('button', 'Проверить источник'); button.type = 'button';
     button.addEventListener('click', () => showEvidence(item.id));
     if(item.coordinates){const mapButton=node('button','Место съёмки ↗','photo-map-button');mapButton.type='button';mapButton.addEventListener('click',()=>window.CampusAtlas?.showPhoto(item.id));body.append(mapButton);}
@@ -243,7 +308,15 @@ async function showEvidence(assetId) {
       const date = new Date(value);
       return Number.isNaN(date.getTime()) ? value : date.toLocaleString('ru-RU');
     };
-    for (const [key, value] of Object.entries({ 'Категория': labels[item.category] || item.category, 'Статус': item.status === 'city_context' ? 'Городской контекст' : 'Вероятно', 'Источник': item.provider, 'Контекст поиска': scopeLabel, 'Автор': item.author, 'Лицензия': item.license, 'Дата публикации/загрузки': dateLabel(item.published_at), 'Дата съёмки': dateLabel(item.captured_at), 'Хеш файла': item.sha1 || 'Нет', 'Визуальный хеш': item.dhash || 'Не вычислен' })) {
+    const visionText = !item.vision ? 'Не выполнялась'
+      : !item.vision.available ? 'Не выполнена для этого файла'
+      : `${item.vision.scene_label} (уверенность ${item.vision.confidence}, ${item.vision.model})`;
+    const agreementText = !item.vision?.available ? '—'
+      : String(item.vision.agreement).startsWith('confirmed') ? 'Текст и изображение согласуются'
+      : String(item.vision.agreement).startsWith('conflict') ? 'Текст и изображение расходятся — уверенность понижена'
+      : String(item.vision.agreement).startsWith('vision_only') ? 'Категория получена только из изображения'
+      : item.vision.agreement;
+    for (const [key, value] of Object.entries({ 'Категория': labels[item.category] || item.category, 'Статус': statusLabels[item.status] || item.status, 'Источник': item.provider, 'Контекст поиска': scopeLabel, 'Автор': item.author, 'Лицензия': item.license, 'Дата публикации/загрузки': dateLabel(item.published_at), 'Дата съёмки': dateLabel(item.captured_at), 'Хеш файла': item.sha1 || 'Нет', 'Визуальный хеш': item.dhash || 'Не вычислен', 'Визуальный классификатор': visionText, 'Согласие двух проверок': agreementText })) {
       dl.append(node('dt', key), node('dd', value));
     }
     holder.append(dl, node('h4', 'Основания'));
@@ -270,7 +343,19 @@ function renderCoverage() {
     row.append(amount, node('td', stateLabel));
     table.append(row);
   }
-  $('coverage').replaceChildren(table);
+  const unclassified = state.profile.unclassified_count || 0;
+  if (unclassified) {
+    const row = node('tr', null, 'coverage-unknown');
+    row.append(node('td', labels.unknown), node('td', String(unclassified)),
+               node('td', 'Есть источник и лицензия, но тип объекта не подтверждён'));
+    table.append(row);
+  }
+  const rejected = (state.profile.rejected_by_vision || []).length;
+  const holder = $('coverage');
+  holder.replaceChildren(table);
+  if (rejected) {
+    holder.append(node('p', `Визуальный классификатор снял с публикации ${rejected} кандидатов как не относящихся к кампусу.`, 'hint'));
+  }
 }
 
 function renderFunnel() {
@@ -306,13 +391,27 @@ function renderExtras() {
   const holder = $('extras'), extras = state.extras, inst = state.profile.institution;
   if(extras.campus_candidate?.status !== 'institution_point') window.CampusAtlas?.setUnverified(extras.campus_candidate);
   holder.replaceChildren();
-  const map = node('article'); map.append(node('h4', 'Карта'));
+  const map = node('article'); map.append(node('h4', 'Карта и перекрёстная проверка координат'));
   if (extras.campus_candidate?.lat && extras.campus_candidate?.lon) {
     const { lat, lon, display_name } = extras.campus_candidate;
     map.append(node('p', display_name));
     map.append(link('Открыть местоположение в OpenStreetMap', `https://www.openstreetmap.org/?mlat=${encodeURIComponent(lat)}&mlon=${encodeURIComponent(lon)}#map=15/${encodeURIComponent(lat)}/${encodeURIComponent(lon)}`));
     map.append(node('p', extras.campus_candidate.warning, 'hint'));
   } else map.append(node('p', 'Подтверждённая точка кампуса не найдена.'));
+  const cross = extras.geocode_crosscheck;
+  if (cross?.points?.length) {
+    const agreementLabel = { confirmed: 'Совпадение независимых геокодеров', conflict: 'Геокодеры расходятся',
+                             single_source: 'Только один источник координаты' }[cross.agreement] || cross.agreement;
+    map.append(node('p', agreementLabel, `geo-agreement ${cross.agreement}`));
+    const list = node('ul', null, 'geo-points');
+    for (const point of cross.points) {
+      const row = node('li');
+      row.append(node('span', `${point.provider}: ${Number(point.lat).toFixed(4)}, ${Number(point.lon).toFixed(4)}`));
+      if (point.source_url) { row.append(node('span', ' · ')); row.append(link('запись', point.source_url)); }
+      list.append(row);
+    }
+    map.append(list);
+  }
   holder.append(map);
 
   const research = node('article'); research.append(node('h4', 'Университет в цифрах'));
@@ -355,17 +454,30 @@ async function compareWith(item) {
     const data = await api(`/api/compare?left=${state.profile.institution.ror_id}&right=${item.ror_id}`);
     const table = node('table', null, 'compare-table');
     const header = node('tr'); for (const label of ['Раздел', ...data.profiles.map(x => x.institution.name)]) header.append(node('th', label)); table.append(header);
-    for (const category of categories) {
-      const row = node('tr'); row.append(node('td', labels[category]));
-      for (const profile of data.profiles) row.append(node('td', `${profile.coverage[category] || 0} материалов`));
+    // All eight sections are compared, and a zero produced by a dead source is
+    // marked so it is never read as a confirmed absence.
+    for (const category of (data.categories || categories)) {
+      const row = node('tr'); row.append(node('td', labels[category] || category));
+      for (const profile of data.profiles) {
+        const count = profile.coverage?.[category] || 0;
+        const failed = profile.category_status?.[category] === 'source_failed';
+        const cell = node('td', `${count} материалов`);
+        if (!count && failed) { cell.textContent = '0 — источник не ответил'; cell.className = 'compare-gap'; }
+        row.append(cell);
+      }
       table.append(row);
     }
     for(const [label,read] of [
+      ['Требует проверки',p=>`${p.unclassified_count || 0} материалов`],
       ['Город и страна',p=>[p.institution.city,p.institution.country].filter(Boolean).join(', ')],
+      ['Полнота профиля',p=>p.profile_status === 'partial' ? 'Неполный' : 'Полный'],
+      ['Визуальная проверка',p=>p.visual_check ? 'Выполнена' : 'Не выполнена'],
+      ['Версия пайплайна',p=>p.pipeline_version || '—'],
       ['Обновлено',p=>new Date(p.generated_at*1000).toLocaleString('ru-RU')],
       ['Всего материалов',p=>String(p.asset_count)],
     ]){const row=node('tr');row.append(node('td',label));for(const profile of data.profiles)row.append(node('td',read(profile)));table.append(row);}
-    $('compare-result').replaceChildren(table, node('p', data.profiles[0].caveat, 'hint'));
+    const caveat = node('p', data.caveat, `hint ${data.comparable ? '' : 'compare-warning'}`);
+    $('compare-result').replaceChildren(table, caveat, node('p', data.profiles[0].caveat, 'hint'));
     status('Сравнение готово.', 'success');
   } catch (error) { status(`Сравнение не удалось: ${error.message}`, 'error'); }
 }

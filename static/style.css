@@ -629,3 +629,159 @@ body:not(.has-profile) .page-shell { width:100%; max-width:none; min-height:100s
 .discussion-card blockquote { margin:14px 0 0; padding-left:16px; border-left:2px solid var(--accent,#aaa); font-size:14px; line-height:1.7; color:var(--muted,#666); }
 .voice-themes article a { display:inline-block; margin:8px 12px 0 0; font-size:13px; }
 .campus-video { width:100%; aspect-ratio:16/9; border:0; margin:12px 0; border-radius:8px; }
+
+/* ============================================================================
+   Unified dark theme (v2)
+   ----------------------------------------------------------------------------
+   The landing page was already a deep near-black surface while the results and
+   profile screens were a light green one, so the product visibly changed skin
+   halfway through the flow. This block is the single place where the palette
+   now lives: one near-black canvas, flat accent colours with no gradient fills,
+   high contrast text, and thin borders instead of drop shadows. Earlier rules
+   are left untouched on purpose — this section only redefines the tokens and
+   overrides the handful of places that hardcoded a light colour.
+   ========================================================================== */
+:root {
+  --canvas:#0a0a0b;          /* page background */
+  --surface:#131316;         /* cards, panels */
+  --surface-2:#191a1d;       /* nested surfaces, inputs */
+  --surface-3:#202126;       /* hover */
+  --ink:#f2f2f4;             /* primary text */
+  --muted:#9d9daa;           /* secondary text, AA on --surface */
+  --line:#2c2d33;            /* structural borders */
+  --line-light:#232429;      /* hairlines inside cards */
+  --accent:#43d98c;          /* flat green, no gradients */
+  --accent-dark:#6ae6a6;     /* used as text/link colour: lighter on dark */
+  --accent-soft:#12251c;     /* tinted fill */
+  --on-accent:#05130c;       /* text placed on an accent fill */
+  --warn-line:#c8823c;
+  --warn-fill:#251a0e;
+  --warn-ink:#f0c795;
+  --radius:6px;
+  color-scheme: dark;
+}
+body { background:var(--canvas); color:var(--ink); }
+a { color:var(--accent-dark); }
+a:hover { color:var(--accent); }
+.brand { color:var(--ink); }
+.brand span { color:var(--accent); }
+
+/* Controls -------------------------------------------------------------- */
+input[type="search"] { border:1px solid var(--line); background:var(--surface-2); color:var(--ink); }
+input[type="search"]::placeholder { color:#6f707b; }
+input[type="search"]:focus { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft); }
+#search-form { background:var(--surface-2); border:1px solid var(--line); }
+form button { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
+form button:hover { background:var(--accent-dark); border-color:var(--accent-dark); }
+.quiet-button { border-color:var(--line); color:var(--accent-dark); background:transparent; }
+.quiet-button:hover { border-color:var(--accent); background:var(--accent-soft); }
+select, .campus-control select, .reachability-controls select {
+  border:1px solid var(--line); background:var(--surface-2); color:var(--ink);
+}
+select:disabled { background:var(--surface); color:var(--muted); }
+.map-layers input { accent-color:var(--accent); }
+
+/* Structure ------------------------------------------------------------- */
+.site-header, .site-footer { border-color:var(--line); }
+.search-results .result { color:var(--ink); border-bottom-color:var(--line-light); }
+.search-results .result:hover, .search-results .result:focus-visible { background:var(--accent-soft); color:var(--accent-dark); }
+.filters button:hover { background:var(--surface-3); color:var(--accent-dark); }
+.filters button[aria-pressed="true"] { background:var(--accent-soft); color:var(--accent-dark); border-left-color:var(--accent); }
+
+#warnings:not(:empty) { border-left:3px solid var(--warn-line); background:var(--warn-fill); color:var(--warn-ink); }
+
+/* Profile status banner: complete vs partial is a load-bearing distinction,
+   so it gets its own colour rather than another grey box. */
+.profile-status { display:flex; flex-direction:column; gap:6px; margin:18px 0 0; padding:14px 16px;
+  border:1px solid var(--line); border-left-width:3px; border-radius:var(--radius);
+  background:var(--surface); font-size:13px; color:var(--muted); }
+.profile-status strong { color:var(--ink); font-size:14px; }
+.profile-status[data-state="complete"] { border-left-color:var(--accent); }
+.profile-status[data-state="partial"] { border-left-color:var(--warn-line); }
+
+/* Cards ----------------------------------------------------------------- */
+.card { border-color:var(--line); background:var(--surface); box-shadow:none; }
+.card img, .image-fallback { background:var(--surface-2); }
+.image-fallback { color:var(--muted); }
+.card .pill { border:1px solid var(--line); background:var(--surface-2); color:var(--muted); }
+.card .pill.probable { color:var(--accent-dark); border-color:#2b4d3b; }
+.card .pill.city_context { color:#8fb7e6; border-color:#28405c; }
+.card .pill.unknown { color:var(--warn-ink); border-color:#4a3a22; }
+.card-credit { color:var(--muted); font-size:12px; line-height:1.6; }
+.card-credit a { color:var(--accent-dark); }
+.card button { color:var(--accent-dark); }
+.card button:hover { color:var(--accent); }
+.card-body .photo-map-button { color:var(--accent-dark); background:var(--accent-soft); }
+
+/* The visual classifier is a second opinion, so its badge reads as evidence,
+   never as decoration: agreement, disagreement and vision-only look different. */
+.vision-badge { margin:8px 0 0; padding:6px 9px; border-radius:var(--radius);
+  border:1px solid var(--line); background:var(--surface-2); font-size:12px; line-height:1.5; }
+.vision-badge.confirmed { border-color:#2b4d3b; color:var(--accent-dark); }
+.vision-badge.conflict { border-color:#4a3a22; color:var(--warn-ink); }
+.vision-badge.partial { color:var(--muted); }
+
+/* Data displays --------------------------------------------------------- */
+.bar { background:var(--line-light); }
+.bar span { background:var(--accent); }
+.coverage-table th, .compare-table th { color:var(--muted); border-bottom-color:var(--line); }
+.coverage-table td, .compare-table td { border-bottom-color:var(--line-light); }
+.coverage-unknown td { color:var(--warn-ink); }
+.compare-gap { color:var(--warn-ink); }
+.compare-warning { color:var(--warn-ink); }
+.compare-section { background:var(--surface); border-color:var(--line); }
+
+.campus-facts { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); margin:18px 0 0; }
+.fact-card { padding:14px 16px; border:1px solid var(--line); border-radius:var(--radius); background:var(--surface); }
+.fact-card h4 { margin:0 0 8px; font-size:13px; letter-spacing:.02em; color:var(--accent-dark); text-transform:uppercase; }
+.fact-card ul { margin:0; padding-left:18px; font-size:13px; line-height:1.7; }
+.description-section { margin:0 0 40px; }
+.geo-agreement { margin:10px 0 4px; font-size:12px; font-weight:650; }
+.geo-agreement.confirmed { color:var(--accent-dark); }
+.geo-agreement.conflict { color:var(--warn-ink); }
+.geo-agreement.single_source { color:var(--muted); }
+.geo-points { margin:0; padding-left:18px; font-size:12px; line-height:1.8; color:var(--muted); }
+
+/* Atlas ----------------------------------------------------------------- */
+.atlas-section { border-color:var(--line); background:var(--surface); }
+.atlas-heading { background:var(--surface-2); }
+.map-stage { background:#0d0d0f; }
+.map-caption { background:var(--surface-2); border-top-color:var(--line); color:var(--muted); }
+.map-modes { background:var(--surface); border-color:var(--line); }
+.map-modes button { color:var(--muted); }
+.map-modes button[aria-pressed="true"] { background:var(--accent); color:var(--on-accent); }
+.atlas-tools { background:var(--surface-2); }
+.atlas-scenarios { background:var(--surface); }
+.scenario-actions button, .reachability-controls button { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
+.scenario-actions .secondary-button { background:var(--surface-2); border-color:var(--line); color:var(--accent-dark); }
+#walk-steps button { background:var(--surface-2); border-color:var(--line); border-left-color:#315a43; color:var(--ink); }
+#walk-steps button[aria-current="true"] { background:var(--accent-soft); border-color:var(--accent); color:var(--accent-dark); }
+.nearby-photo { background:var(--surface-2); border-color:var(--line); color:var(--accent-dark); }
+.nearby-photo:hover { border-color:var(--accent); background:var(--accent-soft); }
+.maplibregl-popup-content { background:var(--surface)!important; color:var(--ink)!important; border:1px solid var(--line); }
+.maplibregl-popup-content button { color:var(--accent-dark); }
+.maplibregl-popup-tip { border-top-color:var(--surface)!important; border-bottom-color:var(--surface)!important; }
+
+/* Dialog and misc ------------------------------------------------------- */
+dialog { border:1px solid var(--line); background:var(--surface); color:var(--ink); box-shadow:none; }
+dialog::backdrop { background:rgba(4,4,6,.72); }
+dialog .close { color:var(--accent-dark); }
+dialog dt { color:var(--muted); }
+.methodology { border-color:var(--line); }
+.methodology summary::after { color:var(--accent); }
+.discussion-card { border-bottom-color:var(--line-light); }
+.discussion-card blockquote { border-left-color:var(--accent); color:var(--muted); }
+#status[data-tone="success"] { color:var(--accent-dark); }
+#status[data-tone="error"] { color:#f0968a; }
+#status[data-tone="loading"]::before { background:var(--accent); }
+
+/* Shadows are replaced by borders throughout, per the flat dark language. */
+.card, .search-panel, .insights-section, .context-section, .voices-section,
+.atlas-section, .compare-section, .profile-status { box-shadow:none; }
+
+/* Once a profile is open the oversized hero is dead weight above the gallery:
+   the compact search panel is kept, the marketing headline is not. */
+body.has-profile .intro-copy { display:none; }
+body.has-profile .intro { display:block; margin-bottom:26px; }
+body.has-profile .search-panel { border:1px solid var(--line); background:var(--surface); }
+.search-panel { border:1px solid var(--line); background:var(--surface); }

@@ -6,10 +6,11 @@ from unittest.mock import AsyncMock
 
 from app import db, vision
 from app.pipeline import (
-    classify, commons_asset, deduplicate, describe_campus, institution_summary,
-    known_name_in_text, latest_student_count, thumbnail_hashes, _hashable_host,
+    build_profile, classify, commons_asset, deduplicate, describe_campus,
+    institution_summary, known_name_in_text, latest_student_count,
+    thumbnail_hashes, _hashable_host,
 )
-from app.integrations import Sources
+from app.integrations import Sources, SourceError
 from app.main import profile as get_profile_endpoint
 from app.atlas import build_atlas, crosscheck_points, isochrone
 from app.discovery import suggest
@@ -387,6 +388,116 @@ class IsochroneProviderTests(unittest.IsolatedAsyncioTestCase):
             result = await isochrone(51.09, 71.4, "teleport", 15)
         self.assertFalse(result["available"])
         self.assertNotIn("geojson", result)
+
+
+class PipelineEndToEndTests(unittest.IsolatedAsyncioTestCase):
+    """Run the whole builder against stubbed sources — no network, real code path."""
+
+    def stub_sources(self, *, fail_metadata=False):
+        pages = [page("Nazarbayev University main building.jpg"),
+                 page("Nazarbayev University library reading room.jpg"),
+                 page("Senate of Nazarbayev University.jpg"),
+                 page("Astana skyline at night.jpg")]
+        for index, item in enumerate(pages):
+            item["imageinfo"][0]["sha1"] = f"sha{index}"
+            item["imageinfo"][0]["thumburl"] = f"https://thumb.wikimedia.org/{index}.jpg"
+
+        class Stub:
+            events = []
+            client = None
+            def __init__(self):
+                self.events = []
+            async def wikidata_details(self, qid):
+                return {"claims": {}, "sitelinks": {}}
+            async def commons_category(self, name, limit=100, pages_=1, **kw):
+                return [{"title": p["title"], "ns": 6} for p in pages[:3]]
+            async def commons_search(self, query, limit=30):
+                return [{"title": "File:Astana skyline at night.jpg"}] if "skyline" in query else []
+            async def commons_imageinfo(self, titles):
+                if fail_metadata:
+                    raise SourceError("commons", "HTTP 429")
+                return [p for p in pages if p["title"] in titles]
+            async def flickr_search(self, name):
+                return []
+        return Stub()
+
+    async def test_full_build_produces_an_honest_complete_profile(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.dict(os.environ, {"DATABASE_PATH": folder + "/t.sqlite3", "GROK_API_KEY": ""}), \
+             patch("app.pipeline.thumbnail_hashes", new=AsyncMock(return_value={"hash_attempted": 3, "hash_succeeded": 3})):
+            db.initialize()
+            result = await build_profile(self.stub_sources(), RECORD)
+
+        self.assertEqual(result["profile_status"], "complete")
+        self.assertEqual(result["pipeline_version"], "0.6.0")
+        # The senate photo must not inflate the campus count.
+        categories_found = {a["title"]: a["category"] for a in result["assets"]}
+        self.assertEqual(categories_found["Senate of Nazarbayev University.jpg"], "unknown")
+        self.assertEqual(categories_found["Nazarbayev University library reading room.jpg"], "library")
+        self.assertEqual(result["unclassified_count"], 1)
+        self.assertNotIn("unknown", result["coverage"])
+        # Without a key the visual layer is absent and the profile says so.
+        self.assertFalse(result["vision"]["available"])
+        self.assertTrue(any("GROK_API_KEY" in w for w in result["warnings"]))
+        # Timings cover the whole run, not one stage.
+        self.assertIn("total", result["timings"])
+        self.assertIn("discovery", result["timings"])
+        self.assertIsInstance(result["time_to_first_asset_ms"], int)
+        # The description is grounded in what was actually found.
+        self.assertIn("библиотеки — 1", result["summary"])
+        self.assertTrue(result["campus_facts"])
+
+    async def test_metadata_failure_marks_the_profile_partial(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.dict(os.environ, {"DATABASE_PATH": folder + "/t.sqlite3", "GROK_API_KEY": ""}), \
+             patch("app.pipeline.thumbnail_hashes", new=AsyncMock(return_value={"hash_attempted": 0, "hash_succeeded": 0})):
+            db.initialize()
+            result = await build_profile(self.stub_sources(fail_metadata=True), RECORD)
+
+        self.assertEqual(result["profile_status"], "partial")
+        self.assertIn("commons_metadata", result["incomplete_sources"])
+        # Every empty category must say "not checked", never "confirmed empty".
+        self.assertTrue(all(v == "source_failed" for v in result["category_status"].values()))
+        self.assertIn("Не проверено из-за недоступности источника", result["summary"])
+
+    async def test_visual_layer_can_remove_a_candidate_end_to_end(self):
+        verdicts = {
+            "Nazarbayev University main building.jpg": {"scene": "campus_exterior", "confidence": 0.9, "note": ""},
+            "Nazarbayev University library reading room.jpg": {"scene": "library", "confidence": 0.9, "note": ""},
+            "Senate of Nazarbayev University.jpg": {"scene": "not_relevant", "confidence": 0.95, "note": "portraits"},
+            "Astana skyline at night.jpg": {"scene": "city_not_campus", "confidence": 0.9, "note": ""},
+        }
+
+        async def fake_ask(client, key, image_url):
+            return None
+
+        async def fake_annotate(assets, *, deadline=None):
+            stats = {"available": True, "model": "stub", "checked": 0, "from_cache": 0, "failed": 0,
+                     "rejected": 0, "confirmed": 0, "conflict": 0, "vision_only": 0, "elapsed_ms": 1}
+            for asset in assets:
+                verdict = verdicts.get(asset["title"])
+                if not verdict:
+                    continue
+                stats["checked"] += 1
+                agreement = vision.reconcile(asset, verdict)
+                for name in ("rejected", "confirmed", "conflict", "vision_only"):
+                    if agreement.startswith(name):
+                        stats[name] += 1
+            return stats
+
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.dict(os.environ, {"DATABASE_PATH": folder + "/t.sqlite3"}), \
+             patch("app.pipeline.thumbnail_hashes", new=AsyncMock(return_value={"hash_attempted": 4, "hash_succeeded": 4})), \
+             patch("app.pipeline.vision.annotate", new=fake_annotate):
+            db.initialize()
+            result = await build_profile(self.stub_sources(), RECORD)
+
+        titles = [a["title"] for a in result["assets"]]
+        self.assertNotIn("Senate of Nazarbayev University.jpg", titles)
+        self.assertEqual(len(result["rejected_by_vision"]), 1)
+        self.assertEqual(result["unclassified_count"], 0)
+        # A dropped candidate must not leave the internal flag in the payload.
+        self.assertTrue(all("drop" not in a for a in result["assets"]))
 
 
 class DescriptionTests(unittest.TestCase):

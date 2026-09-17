@@ -1,0 +1,35 @@
+# Render blueprint. Import the repository at https://dashboard.render.com/blueprints
+# The free instance type is enough for the demo; it sleeps when idle, so open the
+# URL once a few minutes before the defence.
+services:
+  - type: web
+    name: campustrace
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Nominatim refuses anonymous traffic: put a real contact address here.
+      - key: CAMPUS_TRACE_USER_AGENT
+        sync: false
+      # Optional. Everything below is read from the dashboard, never from git.
+      - key: GROK_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: MAPBOX_TOKEN
+        sync: false
+      - key: BRAVE_API_KEY
+        sync: false
+      - key: FLICKR_API_KEY
+        sync: false
+      - key: PROFILE_BUDGET_SECONDS
+        value: "26"
+      - key: DATABASE_PATH
+        value: /data/campustrace.sqlite3
+    disk:
+      name: campustrace-data
+      mountPath: /data
+      sizeGB: 1

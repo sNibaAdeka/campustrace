@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f4f6f3">
+  <meta name="theme-color" content="#0a0a0b">
   <meta name="description" content="CampusTrace собирает визуальный профиль университета с источником, лицензией и уровнем уверенности для каждого кадра.">
   <title>CampusTrace | Визуальный профиль университета</title>
   <script>
@@ -12,8 +12,8 @@
   </script>
   <link rel="icon" href="data:,">
   <link id="map-style" rel="stylesheet" href="/static/vendor/maplibre-gl.css">
-  <link id="app-style" rel="stylesheet" href="/static/style.css?v=45">
-  <link rel="stylesheet" href="/static/box-loader.css?v=1">
+  <link id="app-style" rel="stylesheet" href="/static/style.css?v=50">
+  <link rel="stylesheet" href="/static/box-loader.css?v=2">
 </head>
 <body>
   <main class="page-shell">
@@ -91,37 +91,6 @@
 
     <p id="status" role="status" aria-live="polite"></p>
 
-    <section id="atlas-section" class="atlas-section" aria-labelledby="atlas-title">
-      <div class="atlas-heading">
-        <div><h2 id="atlas-title">От мира до кампуса</h2><p id="map-location-title">Выберите университет, чтобы приблизиться.</p></div>
-        <div class="map-modes" role="group" aria-label="Масштаб карты">
-          <button id="map-mode-globe" type="button" aria-pressed="true">Глобус</button>
-          <button id="map-mode-campus" type="button" aria-pressed="false">Кампус</button>
-        </div>
-      </div>
-      <div class="atlas-workspace">
-        <div class="map-stage">
-          <div id="atlas-map" aria-label="Интерактивная карта университетов"></div>
-          <div class="map-caption"><span id="map-status" role="status">Подготавливаем глобус…</span><a id="google-maps-link" target="_blank" rel="noopener noreferrer" hidden>Google Maps ↗</a></div>
-        </div>
-        <aside class="atlas-tools" aria-label="Исследование кампуса">
-          <div class="campus-control"><label for="campus-select">Кампус</label><select id="campus-select" disabled><option>Сначала выберите университет</option></select><p id="map-precision" class="hint">Точность местоположения будет указана рядом с данными.</p></div>
-          <details class="tool-disclosure" open><summary>Слои карты</summary><div class="map-layers">
-            <label><input id="layer-boundary" type="checkbox" checked>Граница кампуса</label>
-            <label><input id="layer-buildings" type="checkbox" checked>Учебные корпуса</label>
-            <label><input id="layer-dormitories" type="checkbox" checked>Общежития и другие объекты</label>
-            <label><input id="layer-photos" type="checkbox" checked>Кадры с координатами</label>
-            <label><input id="layer-unverified" type="checkbox">Непроверенные места</label>
-          </div><div id="map-legend" class="map-legend"></div></details>
-          <div class="place-panel"><h3>Карта доказательств</h3><div id="place-evidence"><p class="hint">Выберите место на карте. Здесь появятся связанные кадры и основания их привязки.</p></div></div>
-        </aside>
-      </div>
-      <div class="atlas-scenarios">
-        <section class="walk-panel" aria-labelledby="walk-title"><div class="scenario-heading"><h3 id="walk-title">Прогулка абитуриента</h3><p>Выберите остановку и узнайте, что здесь находится.</p></div><div class="scenario-actions"><button id="walk-start" type="button">Начать прогулку</button><button id="walk-next" class="secondary-button" type="button" disabled>Следующая остановка</button><button id="walk-stop" class="text-button" type="button" disabled>Завершить</button></div><p id="walk-status" class="hint" role="status">Маршрут появится после выбора университета, если есть подтверждённые точки.</p><div id="walk-steps"></div></section>
-        <section class="reachability-panel" aria-labelledby="reachability-title"><div class="scenario-heading"><h3 id="reachability-title">Что рядом с кампусом</h3><p>Оцените доступность пешком или на велосипеде.</p></div><div class="reachability-controls"><label for="reachability-mode">Как добраться<select id="reachability-mode"><option value="walking">Пешком</option><option value="cycling">На велосипеде</option></select></label><label for="reachability-minutes">Время<select id="reachability-minutes"><option value="10">10 минут</option><option value="15" selected>15 минут</option><option value="30">30 минут</option></select></label><button id="reachability-build" type="button">Показать зону</button></div><p id="reachability-status" class="hint" role="status">Выберите кампус для расчёта доступности.</p><div id="reachability-details" class="hint"></div></section>
-      </div>
-    </section>
-
     <section id="profile" class="profile" hidden aria-labelledby="institution-name">
       <div class="profile-overview">
         <div class="profile-heading">
@@ -132,19 +101,19 @@
           </div>
           <button id="refresh-button" class="quiet-button" type="button">Обновить данные</button>
         </div>
-        <div class="profile-description">
-          <p id="summary" class="profile-summary"></p>
-          <p id="profile-meta" class="profile-meta"></p>
-        </div>
+        <div id="profile-status" class="profile-status"></div>
       </div>
       <div id="warnings" role="alert"></div>
 
+      <!-- The gallery is the first thing the visitor came for, so it sits at
+           the top of the profile. The description, coverage and context that
+           justify it follow immediately underneath. -->
       <div class="visual-workspace">
         <aside class="workspace-sidebar" aria-label="Разделы профиля">
           <div class="sidebar-sticky">
             <h3>Разделы</h3>
             <div id="filters" class="filters" aria-label="Фильтры фотографий"></div>
-            <p class="sidebar-note">Кадры города показаны отдельно. Статус «вероятно» означает, что точный объект ещё не подтверждён.</p>
+            <p class="sidebar-note">Кадры города показаны отдельно. «Вероятно» означает, что точный объект ещё не подтверждён, «Требует проверки» — что тип объекта не распознан ни текстом, ни изображением.</p>
           </div>
         </aside>
         <div class="workspace-main">
@@ -157,6 +126,18 @@
           </div>
           <div id="gallery" class="gallery"></div>
         </div>
+      </div>
+
+      <div class="description-section">
+        <div class="section-heading">
+          <div>
+            <h3>Что удалось подтвердить о кампусе</h3>
+            <p>Каждое утверждение собрано из найденных материалов. Ничего, что не подтверждено источником, здесь не появляется.</p>
+          </div>
+        </div>
+        <p id="summary" class="profile-summary"></p>
+        <div id="campus-facts" class="campus-facts"></div>
+        <p id="profile-meta" class="profile-meta"></p>
       </div>
 
       <div class="insights-section">
@@ -192,12 +173,43 @@
         <div class="section-heading">
           <div>
             <h3 id="voices-title">Голоса студентов</h3>
-            <p>ИИ ищет публичные обсуждения кампуса и общежитий, затем оставляет ссылки на найденные источники.</p>
+            <p>ИИ ищет публичные обсуждения кампуса и общежитий, затем оставляет ссылки на найденные источники. Фотографии из соцсетей не встраиваются: на них нет открытой лицензии.</p>
           </div>
           <button id="voices-refresh" class="quiet-button" type="button">Исследовать отзывы</button>
         </div>
         <div id="student-voices" class="student-voices"><p class="hint">Отзывы загружаются по запросу, чтобы не превращать чужие личные мнения в постоянный рейтинг.</p></div>
       </section>
+    </section>
+
+    <section id="atlas-section" class="atlas-section" aria-labelledby="atlas-title">
+      <div class="atlas-heading">
+        <div><h2 id="atlas-title">От мира до кампуса</h2><p id="map-location-title">Выберите университет, чтобы приблизиться.</p></div>
+        <div class="map-modes" role="group" aria-label="Масштаб карты">
+          <button id="map-mode-globe" type="button" aria-pressed="true">Глобус</button>
+          <button id="map-mode-campus" type="button" aria-pressed="false">Кампус</button>
+        </div>
+      </div>
+      <div class="atlas-workspace">
+        <div class="map-stage">
+          <div id="atlas-map" aria-label="Интерактивная карта университетов"></div>
+          <div class="map-caption"><span id="map-status" role="status">Подготавливаем глобус…</span><a id="google-maps-link" target="_blank" rel="noopener noreferrer" hidden>Google Maps ↗</a></div>
+        </div>
+        <aside class="atlas-tools" aria-label="Исследование кампуса">
+          <div class="campus-control"><label for="campus-select">Кампус</label><select id="campus-select" disabled><option>Сначала выберите университет</option></select><p id="map-precision" class="hint">Точность местоположения будет указана рядом с данными.</p></div>
+          <details class="tool-disclosure" open><summary>Слои карты</summary><div class="map-layers">
+            <label><input id="layer-boundary" type="checkbox" checked>Граница кампуса</label>
+            <label><input id="layer-buildings" type="checkbox" checked>Учебные корпуса</label>
+            <label><input id="layer-dormitories" type="checkbox" checked>Общежития и другие объекты</label>
+            <label><input id="layer-photos" type="checkbox" checked>Кадры с координатами</label>
+            <label><input id="layer-unverified" type="checkbox">Непроверенные места</label>
+          </div><div id="map-legend" class="map-legend"></div></details>
+          <div class="place-panel"><h3>Карта доказательств</h3><div id="place-evidence"><p class="hint">Выберите место на карте. Здесь появятся связанные кадры и основания их привязки.</p></div></div>
+        </aside>
+      </div>
+      <div class="atlas-scenarios">
+        <section class="walk-panel" aria-labelledby="walk-title"><div class="scenario-heading"><h3 id="walk-title">Прогулка абитуриента</h3><p>Выберите остановку и узнайте, что здесь находится.</p></div><div class="scenario-actions"><button id="walk-start" type="button">Начать прогулку</button><button id="walk-next" class="secondary-button" type="button" disabled>Следующая остановка</button><button id="walk-stop" class="text-button" type="button" disabled>Завершить</button></div><p id="walk-status" class="hint" role="status">Маршрут появится после выбора университета, если есть подтверждённые точки.</p><div id="walk-steps"></div></section>
+        <section class="reachability-panel" aria-labelledby="reachability-title"><div class="scenario-heading"><h3 id="reachability-title">Что рядом с кампусом</h3><p>Оцените доступность пешком или на велосипеде.</p></div><div class="reachability-controls"><label for="reachability-mode">Как добраться<select id="reachability-mode"><option value="walking">Пешком</option><option value="cycling">На велосипеде</option></select></label><label for="reachability-minutes">Время<select id="reachability-minutes"><option value="10">10 минут</option><option value="15" selected>15 минут</option><option value="30">30 минут</option></select></label><button id="reachability-build" type="button">Показать зону</button></div><p id="reachability-status" class="hint" role="status">Выберите кампус для расчёта доступности.</p><div id="reachability-details" class="hint"></div></section>
+      </div>
     </section>
 
     <section id="compare-section" class="compare-section" aria-labelledby="compare-title">
@@ -243,18 +255,18 @@
   <script id="map-script" src="/static/vendor/maplibre-gl.js" defer></script>
   <script id="atlas-script" src="/static/atlas.js?v=7" defer></script>
   <script id="globe-script" src="/static/globe.js?v=4" defer></script>
-  <script id="app-script" src="/static/app.js?v=22" defer></script>
+  <script id="app-script" src="/static/app.js?v=30" defer></script>
   <script>
     // The app normally runs through FastAPI. This fallback preserves its visual
     // shell when index.html is opened directly from the project folder.
     if (location.protocol === 'file:') {
       document.documentElement.classList.add('file-preview');
       document.getElementById('map-style').href = 'vendor/maplibre-gl.css';
-    document.getElementById('app-style').href = 'style.css?v=44';
+    document.getElementById('app-style').href = 'style.css?v=50';
       document.getElementById('map-script').src = 'vendor/maplibre-gl.js';
       document.getElementById('atlas-script').src = 'atlas.js?v=7';
       document.getElementById('globe-script').src = 'globe.js?v=4';
-      document.getElementById('app-script').src = 'app.js?v=21';
+      document.getElementById('app-script').src = 'app.js?v=30';
       document.addEventListener('submit', (event) => {
         if (event.target?.id !== 'home-search-form') return;
         event.preventDefault();
