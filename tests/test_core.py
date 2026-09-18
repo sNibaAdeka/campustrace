@@ -10,7 +10,7 @@ from app.pipeline import (
     build_profile, classify, commons_asset, deduplicate, describe_campus,
     institution_summary, known_name_in_text, latest_student_count,
     thumbnail_hashes, _hashable_host, VERSION, building_category, open_license,
-    evidence_level, valid_title, usable_subcategory,
+    evidence_level, valid_title, usable_subcategory, reliability,
 )
 from app.integrations import parse_building_rows
 from app.integrations import Sources, SourceError
@@ -729,3 +729,20 @@ class SearchRankingTests(unittest.IsolatedAsyncioTestCase):
             result = await suggest('Nazarbayev Univ')
         self.assertEqual(result['results'][0]['ror_id'], '052bx8q98')
         self.assertIsNone(result['warning'])
+
+
+class ReliabilityLevelTests(unittest.TestCase):
+    def test_level_follows_independent_evidence_and_is_only_lowered(self):
+        three = {"category": "library", "status": "probable", "evidence": [{"kind": "wikidata_type"}, {"kind": "depicts"}, {"kind": "name_in_text"}]}
+        self.assertEqual(reliability(three)["level"], "high")
+        two = {"category": "campus", "status": "probable", "evidence": [{"kind": "category"}, {"kind": "name_in_text"}]}
+        self.assertEqual(reliability(two)["level"], "medium")
+        self.assertEqual(reliability({"category": "campus", "evidence": [{"kind": "category"}]})["level"], "low")
+        self.assertEqual(reliability({"category": "campus", "evidence": []})["level"], "low")
+
+    def test_disagreeing_vision_and_unknown_category_lower_the_level(self):
+        disputed = {"category": "campus", "status": "unknown", "evidence": [
+            {"kind": "wikidata_type"}, {"kind": "depicts"}, {"kind": "name_in_text"}, {"kind": "vision", "supports": False}]}
+        self.assertEqual(reliability(disputed), {"level": "medium", "supporting": 3, "disputed": True})
+        self.assertEqual(reliability({"category": "unknown", "evidence": [{"kind": "category"}, {"kind": "name_in_text"}]})["level"], "low")
+        self.assertEqual(reliability({"category": "city", "evidence": [{"kind": "category"}, {"kind": "name_in_text"}]})["level"], "low")

@@ -129,6 +129,22 @@ def evidence_level(asset: dict[str, Any]) -> int:
     return len({e["kind"] for e in asset.get("evidence", []) if e.get("supports", True)})
 
 
+def reliability(asset: dict[str, Any]) -> dict[str, Any]:
+    """Case's "показатель достоверности": a labelled level, not a probability.
+
+    The level is a deterministic function of how many *independent kinds* of
+    evidence support the photo, and it is lowered — never raised — when the
+    visual check disagrees with the text or the category is unknown. The basis
+    is returned so the interface can show exactly why.
+    """
+    count = evidence_level(asset)
+    disputed = any(e.get("kind") == "vision" and e.get("supports") is False for e in asset.get("evidence", []))
+    level = "high" if count >= 3 else "medium" if count == 2 else "low"
+    if disputed or asset.get("category") in ("unknown", "city") or asset.get("status") == "unknown":
+        level = {"high": "medium", "medium": "low"}.get(level, "low")
+    return {"level": level, "supporting": count, "disputed": disputed}
+
+
 def latest_student_count(claims: list[dict[str, Any]], qid: str) -> dict[str, Any] | None:
     current_year = datetime.now(timezone.utc).year
     observations = []
@@ -844,6 +860,7 @@ async def build_profile(
                 "kind": "vision", "supports": agreement.startswith(("confirmed", "vision_only")) and "low_confidence" not in agreement,
                 "detail": f"{verdict.get('scene_label')} ({verdict.get('model')})"})
         asset["evidence_level"] = evidence_level(asset)
+        asset["reliability"] = reliability(asset)
     # Within a category, the best-corroborated photographs come first.
     assets.sort(key=lambda a: (a["category"] == "city", a["category"] == "unknown", -a["evidence_level"],
                                -(_year(a.get("captured_at") or a.get("published_at")) or 0)))
@@ -952,6 +969,7 @@ async def build_preview(sources: Sources, record: dict[str, Any], *, started: fl
                 scope = "wikidata_building" if building else "wikidata_image"
                 if asset := commons_asset(page, institution, scope, {"building": building}):
                     asset["evidence_level"] = evidence_level(asset)
+                    asset["reliability"] = reliability(asset)
                     assets.append(asset)
         except SourceError:
             pass

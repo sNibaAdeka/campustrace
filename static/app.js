@@ -326,7 +326,10 @@ function renderGallery() {
       // A count of independent facts, not a probability.
       const chips = node('ul', null, 'evidence-chips');
       chips.setAttribute('aria-label', `Подтверждений: ${evidence.length}`);
-      chips.append(node('li', `Подтверждений: ${evidence.length}`, 'evidence-count'));
+      const levelText = { high: 'высокая', medium: 'средняя', low: 'низкая' }[item.reliability?.level] || 'низкая';
+      const level = node('li', `Достоверность: ${levelText} · подтверждений ${evidence.length}`, `evidence-count reliability-${item.reliability?.level || 'low'}`);
+      level.title = 'Уровень = число независимых видов подтверждений; понижается при расхождении проверок, неопределённой категории и городском контексте';
+      chips.append(level);
       for (const e of evidence) {
         const chip = node('li', null, 'evidence-chip');
         chip.title = e.detail || '';

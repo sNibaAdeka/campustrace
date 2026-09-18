@@ -793,3 +793,6 @@ body.has-profile .search-panel { border:1px solid var(--line); background:var(--
 .evidence-chips li { padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
 .evidence-chips .evidence-count { border-color: var(--accent); color: var(--ink); font-weight: 650; }
 .evidence-chips a { color: inherit; }
+.evidence-chips .reliability-high { border-color: var(--accent); }
+.evidence-chips .reliability-medium { border-color: #b8891f; }
+.evidence-chips .reliability-low { border-color: #b4574f; }
