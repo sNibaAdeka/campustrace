@@ -116,6 +116,7 @@ def distance_m(a: dict[str, Any], b: dict[str, Any]) -> float:
 # how many of them agree — a count of facts, never a made-up probability.
 EVIDENCE_LABELS = {
     "wikidata_type": "Wikidata: объект вуза с типом",
+    "wikidata_image": "Wikidata: изображение вуза (P18 и др.)",
     "depicts": "Commons: на фото отмечен объект",
     "category": "Категория Commons вуза",
     "name_in_text": "Название вуза в названии/описании файла",
@@ -370,7 +371,7 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str,
     )
     building_names = institution.get("building_names") or []
     building_match = bool(building_names) and known_name_in_text(title, building_names)
-    structured = bool(building) or scope == "depicts"
+    structured = bool(building) or scope in ("depicts", "wikidata_image")
     if not city_only and scope == "search" and not title_name_match:
         return None
     # A geotag near the campus says nothing about *which* building; it only
@@ -438,6 +439,10 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str,
                          "url": f"https://www.wikidata.org/wiki/{building['qid']}"})
     if scope == "depicts" or extra.get("depicts"):
         evidence.append({"kind": "depicts", "detail": "отмечено в структурированных данных файла", "url": info["descriptionurl"]})
+    if scope == "wikidata_image":
+        evidence.append({"kind": "wikidata_image", "detail": "указано в элементе вуза",
+                         "url": f"https://www.wikidata.org/wiki/{institution.get('wikidata_id')}"})
+        reasons.append("Wikidata: файл указан как изображение самого университета")
     if scope.startswith("category") and not building:
         evidence.append({"kind": "category", "detail": scope.split(":", 1)[1] if ":" in scope else "основная категория"})
     if name_match or building_match:
@@ -606,8 +611,9 @@ async def build_profile(
                     institution['campus_coordinates'] = {'lat':value['latitude'], 'lon':value['longitude'], 'source':f"https://www.wikidata.org/wiki/{institution['wikidata_id']}#P625", 'precision':'institution_point'}
                     break
             institution['youtube_channel'] = next((v for v in values('P2397') if isinstance(v,str) and re.fullmatch(r'UC[\w-]{22}',v)), None)
-            for value in values('P18')[:3]:
-                if isinstance(value,str): candidates['File:'+value] = 'category'
+            for prop in ('P18', 'P8517', 'P3451', 'P5775'):
+                for value in values(prop)[:3]:
+                    if isinstance(value,str): candidates['File:'+value] = 'wikidata_image'
         except SourceError as exc:
             warnings.append(f"Wikidata: {exc.detail}"); incomplete_sources.append("wikidata")
 
@@ -744,7 +750,7 @@ async def build_profile(
     groups = {key: [(title, scope) for title, scope in candidates.items()
                     if (scope.startswith("category_sub:") if key == "category_sub" else scope == key)
                     and valid_title(title)]
-              for key in ("wikidata_building", "depicts", "category", "category_sub", "geo", "search", "city")}
+              for key in ("wikidata_image", "wikidata_building", "depicts", "category", "category_sub", "geo", "search", "city")}
     per_sub: dict[str, int] = defaultdict(int)
     capped = []
     for title, scope in groups["category_sub"]:
@@ -752,7 +758,7 @@ async def build_profile(
         if per_sub[scope] <= PER_SUBCATEGORY_LIMIT:
             capped.append((title, scope))
     groups["category_sub"] = capped
-    selected = (groups["wikidata_building"][:24] + groups["depicts"][:30] + groups["category_sub"][:24] +
+    selected = (groups["wikidata_image"][:8] + groups["wikidata_building"][:24] + groups["depicts"][:30] + groups["category_sub"][:24] +
                 groups["category"][:28] + groups["geo"][:24] + groups["search"][:24] + groups["city"][:8])[:100]
     pages: list[dict[str, Any]] = []
     for start in range(0, len(selected), 50):
@@ -929,7 +935,9 @@ async def build_preview(sources: Sources, record: dict[str, Any], *, started: fl
     except SourceError:
         pass
     try:
-        for row in await asyncio.wait_for(buildings_task, timeout=6):
+        # The preview must be fast; a slow SPARQL endpoint only costs us the
+        # building photos here — the full build waits for it longer.
+        for row in await asyncio.wait_for(buildings_task, timeout=1.5):
             category = building_category(row["types"])
             if category:
                 titles.setdefault(row["file"], {**row, "category": category})
@@ -941,7 +949,7 @@ async def build_preview(sources: Sources, record: dict[str, Any], *, started: fl
         try:
             for page in await sources.commons_imageinfo(selected):
                 building = titles.get(page.get("title", ""))
-                scope = "wikidata_building" if building else "category"
+                scope = "wikidata_building" if building else "wikidata_image"
                 if asset := commons_asset(page, institution, scope, {"building": building}):
                     asset["evidence_level"] = evidence_level(asset)
                     assets.append(asset)

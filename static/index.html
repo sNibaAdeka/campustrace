@@ -258,7 +258,7 @@
   <script id="map-script" src="/static/vendor/maplibre-gl.js" defer></script>
   <script id="atlas-script" src="/static/atlas.js?v=7" defer></script>
   <script id="globe-script" src="/static/globe.js?v=4" defer></script>
-  <script id="app-script" src="/static/app.js?v=33" defer></script>
+  <script id="app-script" src="/static/app.js?v=34" defer></script>
   <script>
     // The app normally runs through FastAPI. This fallback preserves its visual
     // shell when index.html is opened directly from the project folder.
@@ -269,7 +269,7 @@
       document.getElementById('map-script').src = 'vendor/maplibre-gl.js';
       document.getElementById('atlas-script').src = 'atlas.js?v=7';
       document.getElementById('globe-script').src = 'globe.js?v=4';
-      document.getElementById('app-script').src = 'app.js?v=33';
+      document.getElementById('app-script').src = 'app.js?v=34';
       document.addEventListener('submit', (event) => {
         if (event.target?.id !== 'home-search-form') return;
         event.preventDefault();

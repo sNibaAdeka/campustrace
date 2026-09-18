@@ -10,7 +10,7 @@ const categories = ['campus', 'dormitory', 'classroom', 'library', 'city', 'spor
 // 'unknown' is deliberately a visible bucket rather than a silent deletion: the
 // material has a real source and licence, we simply cannot say what it shows.
 const filters = ['all', ...categories, 'unknown'];
-const evidenceLabels = { wikidata_type: 'Wikidata: здание вуза', depicts: 'Commons: depicts', category: 'Категория Commons', name_in_text: 'Название в файле', geo_near: 'Геотег у кампуса', vision: 'Проверено по изображению' };
+const evidenceLabels = { wikidata_type: 'Wikidata: здание вуза', wikidata_image: 'Wikidata: фото вуза', depicts: 'Commons: depicts', category: 'Категория Commons', name_in_text: 'Название в файле', geo_near: 'Геотег у кампуса', vision: 'Проверено по изображению' };
 const statusLabels = { city_context: 'Городской контекст', probable: 'Вероятно', unknown: 'Не подтверждено' };
 
 function node(tag, text, cls) {
@@ -105,7 +105,12 @@ async function loadPreview(rorId) {
 }
 async function api(url) {
   const base = location.protocol === 'file:' ? 'http://127.0.0.1:8765' : '';
-  const response = await fetch(base + url);
+  let response = await fetch(base + url);
+  // A dependent endpoint can be asked a moment before the profile is stored.
+  if (response.status === 404 && /\/(extras|student-voices)$/.test(url)) {
+    await new Promise(resolve => window.setTimeout(resolve, 1500));
+    response = await fetch(base + url);
+  }
   const data = await response.json();
   if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
   return data;
@@ -352,7 +357,7 @@ async function showEvidence(assetId) {
     const holder = $('evidence-content'); holder.replaceChildren();
     holder.append(node('h3', item.title));
     const dl = node('dl');
-    const scopeLabel = item.scope === 'wikidata_building' ? 'Здание вуза в Wikidata (P18)' : item.scope === 'depicts' ? 'Структурированные данные Commons (depicts)' : item.scope === 'geo' ? 'Геопоиск Commons у точки кампуса' : item.scope === 'category' ? 'Тематическая категория' : item.scope === 'search' ? 'Поиск по названию' : item.scope === 'city' ? 'Городской контекст' : item.scope === 'flickr_search' ? 'Поиск Flickr' : item.scope?.startsWith('category_sub:') ? 'Подкатегория источника' : item.scope;
+    const scopeLabel = item.scope === 'wikidata_image' ? 'Изображение вуза в Wikidata (P18/P8517/P3451/P5775)' : item.scope === 'wikidata_building' ? 'Здание вуза в Wikidata (P18)' : item.scope === 'depicts' ? 'Структурированные данные Commons (depicts)' : item.scope === 'geo' ? 'Геопоиск Commons у точки кампуса' : item.scope === 'category' ? 'Тематическая категория' : item.scope === 'search' ? 'Поиск по названию' : item.scope === 'city' ? 'Городской контекст' : item.scope === 'flickr_search' ? 'Поиск Flickr' : item.scope?.startsWith('category_sub:') ? 'Подкатегория источника' : item.scope;
     const dateLabel = value => {
       if (!value) return 'Неизвестна';
       const date = new Date(value);

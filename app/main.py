@@ -151,7 +151,7 @@ async def profile_preview(ror_id: str) -> dict[str, Any]:
     sources = Sources(priority=True)
     try:
         record = await sources.ror_get(ror_id)
-        return await asyncio.wait_for(build_preview(sources, record, started=started), timeout=10)
+        return await asyncio.wait_for(build_preview(sources, record, started=started), timeout=12)
     except (SourceError, TimeoutError) as exc:
         raise HTTPException(502, "Preview unavailable; the full profile is still being built") from exc
     finally:
