@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db, vision
+from . import db, triage, vision
 from .atlas import build_atlas, campus_geocode_crosscheck, isochrone, enrich_osm
 from .discovery import suggest, SEEDS
 from .integrations import SourceError, Sources, official_youtube_channel
@@ -93,6 +93,7 @@ async def integrations() -> dict[str, Any]:
             "Groq research": bool(os.getenv("GROQ_API_KEY")),
             "Grok vision (xAI)": bool(os.getenv("GROK_API_KEY")),
             "Vision check (active provider)": vision.provider() and f"{vision.provider()}:{vision.model_name()}",
+            "AI caption triage (text)": triage.configured() and triage.model_name(),
             "Mapbox": bool(os.getenv("MAPBOX_TOKEN")),
         },
         "basemap": "MapLibre GL + OpenFreeMap (no key required); Mapbox is an optional cross-check only.",

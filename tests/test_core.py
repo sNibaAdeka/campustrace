@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 from unittest.mock import AsyncMock
 
-from app import db, vision
+from app import db, triage, vision
 from app.pipeline import (
     build_profile, classify, commons_asset, deduplicate, describe_campus,
     institution_summary, known_name_in_text, latest_student_count,
@@ -796,3 +796,40 @@ class OpenverseTests(unittest.TestCase):
         self.assertTrue(names_institution_exactly("MIT Great Dome", ["MIT"]))
         self.assertFalse(names_institution_exactly("Kyoto University Hospital", ["Kyoto University"]))
         self.assertFalse(names_institution_exactly("Summit dormitory", ["MIT"]))
+
+
+class TriageTests(unittest.TestCase):
+    def asset(self, **kw):
+        return {"id": "a", "title": "x", "category": "unknown", "status": "unknown", "reasons": [], "evidence": [], **kw}
+
+    def test_parse_keeps_only_the_closed_vocabulary(self):
+        raw = ('{"items":[{"i":0,"about":"this_university","place":"library"},{"i":1,"about":"spam","place":"library"},'
+               '{"i":2,"about":"unclear","place":"none"},{"i":9,"about":"unclear","place":"none"},"junk"]}')
+        result = triage.parse(raw, {0, 1, 2})
+        self.assertEqual(set(result), {0, 2})
+        self.assertEqual(triage.parse("no json", {0}), {})
+
+    def test_language_model_fills_an_unknown_category_but_adds_no_evidence(self):
+        item = self.asset(title="京都大学 図書館")
+        self.assertEqual(triage.apply(item, {"about": "this_university", "place": "library"}), "categorised")
+        self.assertEqual(item["category"], "library")
+        self.assertEqual(item["evidence"], [])           # not independent evidence
+        self.assertEqual(reliability(item)["level"], "low")
+
+    def test_language_model_never_overrides_a_known_category(self):
+        item = self.asset(category="campus", status="probable")
+        self.assertEqual(triage.apply(item, {"about": "this_university", "place": "library"}), "unchanged")
+        self.assertEqual(item["category"], "campus")
+
+    def test_other_organisation_is_demoted_unless_structured_evidence_exists(self):
+        weak = self.asset(category="campus", status="probable", evidence=[{"kind": "category"}])
+        self.assertEqual(triage.apply(weak, {"about": "other_organisation", "place": "none"}), "demoted")
+        self.assertEqual(weak["category"], "unknown")
+        self.assertTrue(reliability(weak)["disputed"])
+        strong = self.asset(category="library", status="probable", evidence=[{"kind": "wikidata_type"}])
+        self.assertEqual(triage.apply(strong, {"about": "person_or_event", "place": "none"}), "unchanged")
+        self.assertEqual(strong["category"], "library")
+
+    def test_without_a_key_the_layer_is_a_no_op(self):
+        with patch.dict(os.environ, {"GROQ_API_KEY": ""}):
+            self.assertFalse(triage.configured())

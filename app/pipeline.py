@@ -21,7 +21,7 @@ from urllib.parse import quote, urlparse
 
 from PIL import Image, UnidentifiedImageError
 
-from . import vision
+from . import triage, vision
 from .integrations import SourceError, Sources
 
 
@@ -138,7 +138,7 @@ def reliability(asset: dict[str, Any]) -> dict[str, Any]:
     is returned so the interface can show exactly why.
     """
     count = evidence_level(asset)
-    disputed = any(e.get("kind") == "vision" and e.get("supports") is False for e in asset.get("evidence", []))
+    disputed = any(e.get("supports") is False for e in asset.get("evidence", []))
     level = "high" if count >= 3 else "medium" if count == 2 else "low"
     if disputed or asset.get("category") in ("unknown", "city") or asset.get("status") == "unknown":
         level = {"high": "medium", "medium": "low"}.get(level, "low")
@@ -491,7 +491,7 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str,
         "provider": "Wikimedia Commons", "title": title.removeprefix("File:"),
         "category": category, "tags": tags, "status": status,
         "source_url": info["descriptionurl"], "image_url": info["thumburl"],
-        "author": author or "Не указан", "license": license_name,
+        "author": author or "Не указан", "license": license_name, "description": description[:200],
         "license_url": clean(meta.get("LicenseUrl")),
         "published_at": info.get("timestamp"),
         "captured_at": clean(meta.get("DateTimeOriginal")) or None,
@@ -958,6 +958,17 @@ async def build_profile(
         f"Визуальная проверка дублей: {hash_stats['hash_succeeded']}/{hash_stats['hash_attempted']} "
         "кандидатов хешировано (perceptual hash)."
     )
+    # Multilingual reading of the words that accompany each photo (one batched
+    # Groq call). It fills "unknown" categories and demotes captions that are
+    # about another organisation or a person; it adds no independent evidence.
+    triage_started = time.monotonic()
+    triage_stats = await triage.annotate(
+        institution, assets, deadline=None if deadline is None else min(deadline - 3, time.monotonic() + 8))
+    stage("ai_text_triage", triage_started)
+    if triage_stats["available"] and triage_stats["checked"]:
+        warnings.append(
+            f"ИИ-разбор подписей ({triage_stats['model']}): прочитано {triage_stats['checked']}, "
+            f"уточнена категория у {triage_stats['categorised']}, понижено {triage_stats['demoted']}.")
     # Gallery breadth is a feature, provided the source and licence remain visible.
     assets = ([a for a in assets if a["category"] not in ("city", "unknown")][:60] +
               [a for a in assets if a["category"] == "city"][:10] +
@@ -1032,7 +1043,7 @@ async def build_profile(
         "profile_status": profile_status,
         "category_status": category_status,
         "incomplete_sources": incomplete_sources,
-        "vision": vision_stats,
+        "vision": vision_stats, "ai_text": triage_stats,
         "rejected_by_vision": [{"title": a["title"], "source_url": a["source_url"],
                                 "scene": (a.get("vision") or {}).get("scene_label")}
                                for a in rejected_by_vision],
