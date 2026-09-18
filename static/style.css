@@ -796,3 +796,40 @@ body.has-profile .search-panel { border:1px solid var(--line); background:var(--
 .evidence-chips .reliability-high { border-color: var(--accent); }
 .evidence-chips .reliability-medium { border-color: #b8891f; }
 .evidence-chips .reliability-low { border-color: #b4574f; }
+
+/* Landing, final pass: sized by the viewport's *height* as well as its width,
+   so a 1366x657 or 1536x730 Windows laptop keeps heading, globe and search in
+   one composition. The fallback globe shows until WebGL has drawn a frame. */
+.landing { --globe: min(92vw, 150svh, 1080px); }
+.discovery-globe, .globe-fallback {
+  width: var(--globe); height: var(--globe); min-width: 0; min-height: 0;
+  left: 50%; right: auto; top: auto; bottom: calc(var(--globe) * -0.56); transform: translateX(-50%);
+}
+.globe-fallback { display: block; }
+.landing.cobe-ready .globe-fallback { display: none; }
+.discovery-globe { opacity: 0; transition: opacity .6s ease; }
+.landing.cobe-ready .discovery-globe { opacity: 1; }
+.landing h1 {
+  font-family: "Inter", "Segoe UI Variable Display", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  font-size: clamp(44px, min(8.2vw, 13.5svh), 128px); font-weight: 800;
+  letter-spacing: -0.045em; line-height: .92; top: clamp(44px, 9svh, 120px);
+  padding: 0 16px; box-sizing: border-box; text-wrap: balance;
+}
+.home-search-form, .home-search-results { width: min(640px, calc(100% - 40px)); }
+.landing-footnote { font-size: 12px; color: #9a9aa2; }
+@media (max-height: 700px) and (min-width: 761px) {
+  .home-search-form { bottom: 36px; }
+  .home-search-results { bottom: 108px; max-height: calc(100svh - 260px); overflow-y: auto; }
+  .landing-footnote { bottom: 10px; }
+}
+@media (max-width: 760px) {
+  .landing { --globe: min(128vw, 120svh); }
+  .landing h1 { font-size: clamp(40px, 13vw, 72px); }
+}
+.discovery-globe, .globe-fallback { bottom: calc(var(--globe) * -0.5); }
+.landing-footnote { width: auto; padding: 4px 12px; border-radius: 999px; background: rgba(8, 8, 9, .72); color: #c4c4cb; white-space: nowrap; }
+/* overflow:hidden still lets the browser scroll the landing to reveal a focused
+   field (the globe overhangs the bottom), which pushed the heading off-screen on
+   short laptop viewports. clip never scrolls. */
+.landing { overflow: clip; height: 100svh; }
+.home-search-results { max-height: calc(100svh - 240px); overflow-y: auto; }

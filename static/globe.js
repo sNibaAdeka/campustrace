@@ -48,6 +48,8 @@
       onRender(state) {
         if (!rendered) {
           rendered = true;
+          // A slow GPU may render after the fallback timer fired: show it anyway.
+          canvas.classList.remove('globe-unavailable');
           document.getElementById('landing')?.classList.add('cobe-ready');
         }
         if (dragStart === null && !reduced.matches) phi += 0.0038;
@@ -71,8 +73,11 @@
     // Keep the page usable if a visitor is offline; the real Cobe globe is used whenever its module loads.
     canvas.classList.add('globe-unavailable');
   });
+  // Integrated laptop GPUs (common on Windows) can need several seconds for the
+  // first WebGL frame. Until then the CSS globe stays visible; the canvas is
+  // only given up for good if nothing has rendered after 8 s.
   window.setTimeout(() => {
     if (!rendered) canvas.classList.add('globe-unavailable');
-  }, 1400);
+  }, 8000);
   window.addEventListener('beforeunload', () => globe?.destroy());
 })();
