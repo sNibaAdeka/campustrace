@@ -10,7 +10,7 @@ from app.pipeline import (
     build_profile, classify, commons_asset, deduplicate, describe_campus,
     institution_summary, known_name_in_text, latest_student_count,
     thumbnail_hashes, _hashable_host, VERSION, building_category, open_license,
-    evidence_level, valid_title, usable_subcategory, reliability, openverse_asset, names_institution_exactly,
+    evidence_level, valid_title, usable_subcategory, reliability, openverse_asset, names_institution_exactly, city_center_distance,
 )
 from app.integrations import parse_building_rows
 from app.integrations import Sources, SourceError
@@ -198,6 +198,18 @@ class AtlasAndSearchTests(unittest.IsolatedAsyncioTestCase):
                 posts=await _groq_web_search(client,'Stanford University','USA')
         self.assertEqual(len(posts),1)
         self.assertEqual(posts[0]['title'],'Actual source')
+    async def test_groq_search_falls_back_to_second_model_on_rate_limit(self):
+        seen = []
+        ok = {'choices':[{'message':{'executed_tools':[{'search_results':{'results':[{'title':'Tartu dorm life','url':'https://isablog.ut.ee/x'}]}}]}}]}
+        def handler(request):
+            model = json.loads(request.content)['model']; seen.append(model)
+            return httpx.Response(429 if model.endswith('120b') else 200, json={} if model.endswith('120b') else ok)
+        with patch.dict(os.environ,{'GROQ_API_KEY':'test'}):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                posts=await _groq_web_search(client,'University of Tartu','Estonia')
+        self.assertEqual(seen, ['openai/gpt-oss-120b', 'openai/gpt-oss-20b'])
+        self.assertEqual(posts[0]['url'], 'https://isablog.ut.ee/x')
+
     async def test_cyrillic_acronym_finds_exact_institution(self):
         result = await suggest("НУ")
         self.assertEqual(result["results"][0]["ror_id"], "052bx8q98")
@@ -845,3 +857,16 @@ class TriageTests(unittest.TestCase):
         with patch('app.discovery.Sources', return_value=source), patch('app.discovery._cache', {}):
             result = await suggest('Toronto')
         self.assertEqual(result['results'], [])
+
+
+class CityDistanceTests(unittest.TestCase):
+    def test_distance_is_straight_line_with_both_origins(self):
+        d = city_center_distance({"campus_coordinates": {"lat": 51.0906, "lon": 71.3980, "source": "wd"},
+                                  "city_coordinates": {"lat": 51.1801, "lon": 71.4460}})
+        self.assertAlmostEqual(d["km"], 10.6, delta=0.5)
+        self.assertTrue(d["straight_line"])
+        self.assertIn("GeoNames", d["to"]["source"])
+
+    def test_no_point_or_absurd_distance_gives_nothing(self):
+        self.assertIsNone(city_center_distance({"city_coordinates": {"lat": 1, "lon": 1}}))
+        self.assertIsNone(city_center_distance({"campus_coordinates": {"lat": 0, "lon": 0}, "city_coordinates": {"lat": 10, "lon": 10}}))

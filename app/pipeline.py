@@ -93,6 +93,32 @@ BUILDING_TYPE_CATEGORY: tuple[tuple[str, tuple[str, ...]], ...] = (
 # Open licences only. Anything else is dropped before it can be shown.
 OPEN_LICENSE = re.compile(r"^(cc0|cc[ -]by(-sa)?[ -]?\d(\.\d)?.*|cc[ -]by(-sa)?|public domain|pd.*|attribution.*|gfdl.*|fal|free art license.*)$", re.I)
 GEO_NEAR_METRES = 1500
+# Wikipedia editions to read besides English, by country (the local article is
+# usually where campus buildings, dormitories and libraries are illustrated).
+WIKI_LANGS = {
+    "KZ": ("ru", "kk"), "RU": ("ru",), "UA": ("uk",), "BY": ("ru", "be"), "KG": ("ru", "ky"), "UZ": ("uz", "ru"),
+    "JP": ("ja",), "CN": ("zh",), "KR": ("ko",), "TW": ("zh",), "DE": ("de",), "AT": ("de",), "CH": ("de", "fr"),
+    "FR": ("fr",), "BE": ("fr", "nl"), "NL": ("nl",), "IT": ("it",), "ES": ("es",), "PT": ("pt",), "BR": ("pt",),
+    "AR": ("es",), "MX": ("es",), "CL": ("es",), "CO": ("es",), "PL": ("pl",), "CZ": ("cs",), "SE": ("sv",),
+    "NO": ("no",), "DK": ("da",), "FI": ("fi",), "EE": ("et",), "LV": ("lv",), "LT": ("lt",), "TR": ("tr",),
+    "IR": ("fa",), "IL": ("he",), "EG": ("ar",), "SA": ("ar",), "AE": ("ar",), "IN": ("hi",), "VN": ("vi",),
+    "TH": ("th",), "ID": ("id",), "GR": ("el",), "HU": ("hu",), "RO": ("ro",), "BG": ("bg",), "RS": ("sr",),
+}
+
+
+def city_center_distance(institution: dict[str, Any]) -> dict[str, Any] | None:
+    """Straight-line distance from the campus point (Wikidata P625) to the city
+    centre point (GeoNames, via ROR). Both points and their origin are returned,
+    because a straight line is not a commute and a P625 point is not a gate."""
+    campus, centre = institution.get("campus_coordinates"), institution.get("city_coordinates")
+    if not campus or not centre or centre.get("lat") is None:
+        return None
+    metres = distance_m(campus, centre)
+    if metres > 80000:
+        return None  # a regional campus or a wrong point; not a "distance to the centre"
+    return {"km": round(metres / 1000, 1), "straight_line": True,
+            "from": {"lat": campus["lat"], "lon": campus["lon"], "source": campus.get("source") or "Wikidata P625"},
+            "to": {"lat": centre["lat"], "lon": centre["lon"], "source": "GeoNames (через ROR): центр города"}}
 
 
 def building_category(types: list[str]) -> str | None:
@@ -117,6 +143,7 @@ def distance_m(a: dict[str, Any], b: dict[str, Any]) -> float:
 EVIDENCE_LABELS = {
     "wikidata_type": "Wikidata: объект вуза с типом",
     "wikidata_image": "Wikidata: изображение вуза (P18 и др.)",
+    "wikipedia": "Иллюстрация статьи о вузе в Википедии",
     "depicts": "Commons: на фото отмечен объект",
     "category": "Категория Commons вуза",
     "name_in_text": "Название вуза в названии/описании файла",
@@ -409,7 +436,7 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str,
     )
     building_names = institution.get("building_names") or []
     building_match = bool(building_names) and known_name_in_text(title, building_names)
-    structured = bool(building) or scope in ("depicts", "wikidata_image")
+    structured = bool(building) or scope in ("depicts", "wikidata_image", "wikipedia")
     if not city_only and scope == "search" and not title_name_match:
         return None
     # A geotag near the campus says nothing about *which* building; it only
@@ -477,6 +504,11 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str,
                          "url": f"https://www.wikidata.org/wiki/{building['qid']}"})
     if scope == "depicts" or extra.get("depicts"):
         evidence.append({"kind": "depicts", "detail": "отмечено в структурированных данных файла", "url": info["descriptionurl"]})
+    if scope == "wikipedia" or extra.get("wikipedia"):
+        lang = extra.get("wikipedia") or "?"
+        evidence.append({"kind": "wikipedia", "detail": f"иллюстрация статьи о вузе ({lang}.wikipedia)",
+                         "url": f"https://{lang}.wikipedia.org/wiki/Special:Search?search={quote(institution['name'])}"})
+        reasons.append(f"Изображение выбрано редакторами статьи о вузе в Википедии ({lang})")
     if scope == "wikidata_image":
         evidence.append({"kind": "wikidata_image", "detail": "указано в элементе вуза",
                          "url": f"https://www.wikidata.org/wiki/{institution.get('wikidata_id')}"})
@@ -703,6 +735,31 @@ async def build_profile(
         except SourceError as exc:
             warnings.append(f"Wikidata: {exc.detail}"); incomplete_sources.append("wikidata")
 
+    # Illustrations of the university's own Wikipedia articles, in English and
+    # in the country's languages: an editor chose them for this article, and the
+    # local-language article is where dormitories and libraries usually appear.
+    wikipedia_lang: dict[str, str] = {}
+
+    async def wikipedia_images() -> list[tuple[str, str]]:
+        wanted = ["en"] + [x for x in WIKI_LANGS.get(institution.get("country_code") or "", ()) if x != "en"]
+        links = details.get("sitelinks", {}) if isinstance(details, dict) else {}
+        jobs = [(lang, links[lang + "wiki"]["title"]) for lang in wanted[:3] if links.get(lang + "wiki", {}).get("title")]
+
+        async def one(lang: str, article: str) -> list[tuple[str, str]]:
+            try:
+                data = await sources.json("wikidata", f"https://{lang}.wikipedia.org/w/api.php", params={
+                    "action": "query", "prop": "images", "titles": article, "imlimit": "40", "format": "json"})
+            except SourceError:
+                return []
+            # Local editions name the file namespace in their own language
+            # ("Файл:", "Datei:", "ファイル:"); Commons only knows "File:".
+            return [("File:" + image["title"].split(":", 1)[1], lang)
+                    for page in data.get("query", {}).get("pages", {}).values() for image in page.get("images", [])
+                    if image.get("ns") == 6 and ":" in image.get("title", "")]
+        batches = await asyncio.gather(*(one(lang, article) for lang, article in jobs))
+        return [pair for batch in batches for pair in batch]
+    wikipedia_task = asyncio.ensure_future(wikipedia_images()) if details else None
+
     # Structured sources first. SPARQL runs on a different host than the
     # rate-limited Commons API, so it overlaps with the Commons chain below.
     buildings_task = (asyncio.ensure_future(sources.wikidata_buildings(institution["wikidata_id"]))
@@ -846,18 +903,14 @@ async def build_profile(
 
     # Use the institution's linked encyclopedia article when Commons search has
     # sparse coverage. Only files that also have Commons licence metadata survive.
-    if len(candidates) < 25 and budget_left() > 10:
-        for language in ('en', 'ru'):
-            title = details.get('sitelinks',{}).get(language+'wiki',{}).get('title')
-            if not title: continue
-            try:
-                data = await sources.json('wikidata',f'https://{language}.wikipedia.org/w/api.php',params={'action':'query','prop':'images','titles':title,'imlimit':30,'format':'json'})
-                for page in data.get('query',{}).get('pages',{}).values():
-                    for image in page.get('images',[]):
-                        candidates.setdefault(image['title'],'category_sub:'+institution['name'])
-            except SourceError as exc:
-                warnings.append(f'Wikipedia: {exc.detail}'); incomplete_sources.append('wikipedia')
-            break
+    if wikipedia_task is not None:
+        try:
+            for title, language in await asyncio.wait_for(wikipedia_task, timeout=max(0.5, min(4.0, budget_left() - 10))):
+                if title not in candidates:
+                    candidates[title] = "wikipedia"
+                    wikipedia_lang.setdefault(title, language)
+        except TimeoutError:
+            wikipedia_task.cancel(); incomplete_sources.append("wikipedia")
 
     # City search is explicitly a different claim from a campus photograph.
     if institution.get("city") and budget_left() > 9:
@@ -871,7 +924,7 @@ async def build_profile(
     groups = {key: [(title, scope) for title, scope in candidates.items()
                     if (scope.startswith("category_sub:") if key == "category_sub" else scope == key)
                     and valid_title(title)]
-              for key in ("wikidata_image", "wikidata_building", "depicts", "category", "category_sub", "geo", "search", "city")}
+              for key in ("wikidata_image", "wikidata_building", "depicts", "wikipedia", "category", "category_sub", "geo", "search", "city")}
     per_sub: dict[str, int] = defaultdict(int)
     capped = []
     for title, scope in groups["category_sub"]:
@@ -879,7 +932,7 @@ async def build_profile(
         if per_sub[scope] <= PER_SUBCATEGORY_LIMIT:
             capped.append((title, scope))
     groups["category_sub"] = capped
-    selected = (groups["wikidata_image"][:8] + groups["wikidata_building"][:24] + groups["depicts"][:30] + groups["category_sub"][:24] +
+    selected = (groups["wikidata_image"][:8] + groups["wikidata_building"][:24] + groups["wikipedia"][:16] + groups["depicts"][:30] + groups["category_sub"][:24] +
                 groups["category"][:28] + groups["geo"][:24] + groups["search"][:24] + groups["city"][:8])[:100]
     pages: list[dict[str, Any]] = []
     for start in range(0, len(selected), 50):
@@ -897,7 +950,8 @@ async def build_profile(
     rejected_license = 0
     for page in pages:
         page_title = page.get("title", "")
-        extra = {"building": building_by_file.get(page_title), "depicts": page_title in depicts_titles}
+        extra = {"building": building_by_file.get(page_title), "depicts": page_title in depicts_titles,
+                 "wikipedia": wikipedia_lang.get(page_title)}
         asset = commons_asset(page, institution, scope_by_title.get(page_title, "search"), extra)
         if asset:
             assets.append(asset)
@@ -1031,6 +1085,7 @@ async def build_profile(
         category: ("has_results" if count > 0 else ("source_failed" if incomplete_sources else "empty_confirmed"))
         for category, count in counts.items()
     }
+    institution["city_center_distance"] = city_center_distance(institution)
     description = describe_campus(institution, assets, counts, category_status)
     stage_times["total"] = int((time.monotonic() - started) * 1000)
 
