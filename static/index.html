@@ -14,12 +14,13 @@
   <link id="map-style" rel="stylesheet" href="/static/vendor/maplibre-gl.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&subset=cyrillic&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Onest:wght@400;500;600;700&family=Unbounded:wght@500;700&family=JetBrains+Mono:wght@400;500&subset=cyrillic&display=swap">
   <link rel="preconnect" href="https://thumb.wikimedia.org">
   <link rel="preconnect" href="https://upload.wikimedia.org">
   <link id="app-style" rel="stylesheet" href="/static/style.css?v=54">
   <link rel="stylesheet" href="/static/box-loader.css?v=3">
   <link rel="stylesheet" href="/static/glass.css?v=6">
+  <link rel="stylesheet" href="/static/archive.css?v=1">
 </head>
 <body>
   <main class="page-shell">
@@ -110,6 +111,30 @@
         </div>
         <div id="profile-status" class="profile-status"></div>
       </div>
+      <section id="source-rail" class="source-rail" aria-labelledby="rail-title" hidden>
+        <div class="rail-head">
+          <h3 id="rail-title">Откуда мы это знаем</h3>
+          <p>Каждый знак — источник, где нашлось что-то об этом вузе. Нажмите, чтобы увидеть всё, что пришло оттуда.</p>
+        </div>
+        <div class="rail-viewport"><div id="rail-track" class="rail-track"></div></div>
+        <div id="source-drawer" class="source-drawer" hidden aria-live="polite"></div>
+      </section>
+
+      <div class="about-ask">
+        <article id="about-card" class="about-card" hidden></article>
+        <section class="ask-card" aria-labelledby="ask-title">
+          <h3 id="ask-title">Спросите о вузе</h3>
+          <p class="ask-note">Ответ собирается только из найденных здесь источников, с номерами ссылок. Если в них ответа нет, так и будет написано.</p>
+          <form id="ask-form" class="ask-form">
+            <label class="visually-hidden" for="ask-input">Ваш вопрос о вузе</label>
+            <input id="ask-input" type="text" minlength="3" maxlength="300" required placeholder="Например: есть ли общежитие?" autocomplete="off">
+            <button type="submit">Спросить</button>
+          </form>
+          <div id="ask-chips" class="ask-chips"></div>
+          <div id="ask-answer" class="ask-answer" aria-live="polite"></div>
+        </section>
+      </div>
+
       <div id="warnings" role="alert"></div>
 
       <!-- The gallery is the first thing the visitor came for, so it sits at
@@ -187,6 +212,14 @@
         </div>
         <div id="extras" class="extras"><p class="hint">Загружаем дополнительные источники.</p></div>
       </div>
+
+      <section id="news-section" class="news-section" aria-labelledby="news-title" hidden>
+        <div class="section-heading"><div>
+          <h3 id="news-title">В новостях</h3>
+          <p>Статьи за последние 12 месяцев, где вуз назван в заголовке. Индекс новостей GDELT, ссылки на первоисточники.</p>
+        </div></div>
+        <ol id="news-list" class="news-list"></ol>
+      </section>
 
       <section class="voices-section" aria-labelledby="voices-title">
         <div class="section-heading">
@@ -287,7 +320,8 @@
   <script id="map-script" src="/static/vendor/maplibre-gl.js" defer></script>
   <script id="atlas-script" src="/static/atlas.js?v=7" defer></script>
   <script id="globe-script" src="/static/globe.js?v=5" defer></script>
-  <script id="app-script" src="/static/app.js?v=40" defer></script>
+  <script src="/static/brand-icons.js?v=1" defer></script>
+  <script id="app-script" src="/static/app.js?v=41" defer></script>
   <script>
     // The app normally runs through FastAPI. This fallback preserves its visual
     // shell when index.html is opened directly from the project folder.

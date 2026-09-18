@@ -168,6 +168,7 @@ async function loadProfile(rorId, refresh = false) {
     status(profile.from_cache ? 'Профиль загружен из кэша.' : `Профиль собран за ${Math.round(profile.elapsed_ms / 1000)} с.`, 'success');
     loadExtras(rorId);
     loadVoices();
+    loadNews();
     if (state.researching) {
       const remaining = Math.max(0, 3200 - (Date.now() - state.loaderStartedAt));
       loaderExitTimer = window.setTimeout(() => { if (sequence !== profileSequence) return; stopResearch(); window.scrollTo({ top: 0, behavior: 'instant' }); }, remaining);
@@ -187,12 +188,6 @@ const PLATFORM_COLORS = { Reddit: '#ff8b60', Quora: '#ff9a8f', YouTube: '#ff7a7a
   '2ГИС': '#9be07a', 'Яндекс Карты': '#ffd26a', EduOpinions: '#b9a8ff', Studyportals: '#8fe0d0' };
 const KIND_LABELS = { forum: 'форум', review_site: 'сайт отзывов', video: 'видео', blog: 'блог', social: 'соцсеть',
   news: 'СМИ', official: 'вуз о себе', reference: 'справка', web: 'веб', map_review: 'отзывы на карте' };
-function platformDot(name) {
-  const dot = node('span', (name || '?').replace(/^www\./, '').slice(0, 1).toUpperCase(), 'platform-dot');
-  dot.style.setProperty('--p', PLATFORM_COLORS[name] || '#cfd3dc');
-  dot.setAttribute('aria-hidden', 'true');
-  return dot;
-}
 function sourceRefs(ids, sources) {
   const sup = node('sup');
   for (const id of ids || []) { const s = sources.find(x => x.id === id); if (s) { const a = link(`[${id}]`, s.url); a.title = s.title; sup.append(a); } }
@@ -263,6 +258,7 @@ async function loadVoices() {
     if (state.profile?.institution.ror_id !== profile.institution.ror_id) return;
     renderVoices(holder, data);
     renderSocialPosts(data.social_posts);
+    state.voices = data; renderRail();
     status(`Исследование отзывов готово за ${Math.max(1, Math.round(data.elapsed_ms / 1000))} с.`, 'success');
   } catch (error) { if (state.profile?.institution.ror_id === profile.institution.ror_id) holder.replaceChildren(node('p', `Отзывы недоступны: ${error.message}`, 'hint')); }
   finally { if (state.profile?.institution.ror_id === profile.institution.ror_id) $('voices-refresh').disabled = false; }
@@ -288,6 +284,8 @@ function renderProfile() {
   const body = node('div', null, 'tech-body'); for (const w of notes) body.append(node('p', w)); log.append(body);
   $('warnings').replaceChildren(...(notes.length ? [log] : []));
   renderProfileStatus(); renderFacts(); renderHero(); renderSocial();
+  state.voices = null; state.news = null; state.openSource = null; $('source-drawer').hidden = true;
+  renderAbout(); renderAsk(); renderRail();
   renderFilters(); renderGallery(); renderCoverage(); renderFunnel();
 }
 
@@ -820,4 +818,171 @@ function renderSocialPosts(posts) {
     box.append(cap); grid.append(box);
   }
   holder.append(grid);
+}
+
+// ---- Brand marks -----------------------------------------------------------
+// Real platform logos (Simple Icons, CC0) where one exists, a monogram otherwise.
+function brandMark(name, small = false) {
+  const mark = node('span', null, `brand-mark${small ? ' sm' : ''}`);
+  mark.setAttribute('aria-hidden', 'true');
+  const path = (window.BRAND_ICONS || {})[name];
+  if (path) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', path);
+    svg.append(p); mark.append(svg);
+  } else {
+    mark.classList.add('mono');
+    mark.textContent = ({ '2ГИС': '2Г', 'Яндекс Карты': 'Я', 'Официальный сайт вуза': 'ВУЗ', 'ROR': 'ROR', 'GDELT': 'N', 'Openverse': 'OV' })[name]
+      || String(name || '?').replace(/^www\./, '').slice(0, 2).toUpperCase();
+  }
+  return mark;
+}
+// Voice cards and social chips use the same marks.
+function platformDot(name) { return brandMark(name, true); }
+
+// ---- Sources: everything the profile knows, grouped by where it came from ---
+state.news = null;
+function collectSources() {
+  const p = state.profile, inst = p.institution, map = new Map();
+  const bucket = (name, kind) => {
+    if (!map.has(name)) map.set(name, { name, kind, photos: [], voices: [], news: [], facts: [] });
+    return map.get(name);
+  };
+  bucket('ROR', 'реестр').facts.push({ text: `${inst.name}: организация в реестре ROR`, url: `https://ror.org/${inst.ror_id}` });
+  if (inst.wikidata_id) {
+    const wd = bucket('Wikidata', 'база знаний');
+    wd.facts.push({ text: 'Элемент вуза: координаты, здания, соцсети', url: `https://www.wikidata.org/wiki/${inst.wikidata_id}` });
+    if (inst.founded) wd.facts.push({ text: `Год основания: ${inst.founded.year}`, url: inst.founded.source });
+  }
+  if (inst.about) bucket('Википедия', 'энциклопедия').facts.push({ text: `Статья «${inst.about.title}» (${inst.about.lang})`, url: inst.about.url });
+  for (const a of p.assets) {
+    const provider = a.provider.startsWith('Openverse') ? 'Flickr' : a.provider === 'Wikimedia Commons' ? 'Wikimedia Commons' : a.provider;
+    bucket(provider, 'фото').photos.push(a);
+    const kinds = new Set((a.evidence || []).map(e => e.kind));
+    if (kinds.has('wikidata_type') || kinds.has('wikidata_image')) bucket('Wikidata', 'база знаний').photos.push(a);
+    if (kinds.has('wikipedia')) bucket('Википедия', 'энциклопедия').photos.push(a);
+  }
+  for (const v of state.voices?.sources || []) bucket(v.platform || v.provider, KIND_LABELS[v.kind] || 'веб').voices.push(v);
+  const social = { ...(inst.social || {}) };
+  for (const [net, handle] of Object.entries(social)) {
+    const name = SOCIAL_NAME[net]; if (!name) continue;
+    bucket(name, 'соцсеть').facts.push({ text: `Официальный аккаунт @${handle}`, url: SOCIAL_URL[net](handle) });
+  }
+  if (inst.youtube_channel) bucket('YouTube', 'видео').facts.push({ text: 'Официальный канал вуза', url: `https://www.youtube.com/channel/${inst.youtube_channel}` });
+  for (const n of state.news?.articles || []) bucket('GDELT', 'новости').news.push(n);
+  return [...map.values()].map(s => ({ ...s, count: s.photos.length + s.voices.length + s.news.length + s.facts.length }))
+    .filter(s => s.count).sort((a, b) => b.count - a.count);
+}
+
+function renderRail() {
+  const rail = $('source-rail'), track = $('rail-track');
+  const sources = collectSources();
+  rail.hidden = !sources.length; track.replaceChildren();
+  // The belt is drawn twice for a seamless loop; the copy is hidden from
+  // assistive tech and from the keyboard.
+  for (const copy of [false, true]) {
+    for (const src of sources) {
+      const item = node('button', null, 'rail-item'); item.type = 'button';
+      item.dataset.source = src.name;
+      item.setAttribute('aria-pressed', String(state.openSource === src.name));
+      if (copy) { item.setAttribute('aria-hidden', 'true'); item.tabIndex = -1; }
+      item.append(brandMark(src.name), node('span', src.name === 'GDELT' ? 'Новости' : src.name), node('span', String(src.count), 'rail-count'));
+      item.setAttribute('aria-label', `${src.name}: ${src.count} — показать`);
+      item.addEventListener('click', () => openSource(src.name));
+      track.append(item);
+    }
+  }
+  if (state.openSource) openSource(state.openSource, true);
+}
+
+function openSource(name, keep = false) {
+  const drawer = $('source-drawer');
+  if (!keep && state.openSource === name) { state.openSource = null; drawer.hidden = true; $('source-rail').classList.remove('is-open'); renderRailPressed(); return; }
+  const src = collectSources().find(s => s.name === name);
+  if (!src) { drawer.hidden = true; return; }
+  state.openSource = name; $('source-rail').classList.add('is-open'); renderRailPressed();
+  drawer.replaceChildren();
+  const head = node('div', null, 'drawer-head');
+  const title = node('div'); title.append(node('h4', name === 'GDELT' ? 'Новости (GDELT)' : name), node('span', `${src.kind} · ${src.count}`, 'drawer-kicker'));
+  const close = node('button', 'Свернуть', 'drawer-close'); close.type = 'button';
+  close.addEventListener('click', () => openSource(name));
+  head.append(brandMark(name), title, close); drawer.append(head);
+  if (src.photos.length) {
+    const grid = node('div', null, 'drawer-photos');
+    for (const a of src.photos.slice(0, 18)) {
+      const link_ = node('a'); link_.href = a.source_url; link_.target = '_blank'; link_.rel = 'noopener noreferrer';
+      link_.title = `${a.title} — ${a.author}, ${a.license}`;
+      const img = node('img'); img.src = thumbOf(a); img.alt = a.title; img.loading = 'lazy'; img.decoding = 'async';
+      link_.append(img); grid.append(link_);
+    }
+    drawer.append(grid);
+  }
+  const list = node('ul', null, 'drawer-list');
+  for (const f of src.facts) { const li = node('li'); li.append(link(f.text, f.url)); list.append(li); }
+  for (const v of src.voices) { const li = node('li'); li.append(link(v.title, v.url)); if (v.excerpt) li.append(node('small', v.excerpt.slice(0, 180))); list.append(li); }
+  for (const n of src.news) { const li = node('li'); li.append(link(n.title, n.url)); li.append(node('small', [n.domain, n.date].filter(Boolean).join(' · '))); list.append(li); }
+  if (list.children.length) drawer.append(list);
+  drawer.hidden = false;
+}
+function renderRailPressed() {
+  for (const b of document.querySelectorAll('.rail-item')) b.setAttribute('aria-pressed', String(b.dataset.source === state.openSource));
+}
+
+// ---- About (Wikipedia) -------------------------------------------------------
+function renderAbout() {
+  const inst = state.profile.institution, card = $('about-card');
+  card.replaceChildren(); card.hidden = !inst.about;
+  if (!inst.about) return;
+  card.append(node('h3', 'Об университете'));
+  const facts = [inst.founded && `основан в ${inst.founded.year}`, inst.city_center_distance && `${inst.city_center_distance.km} км до центра по прямой`].filter(Boolean);
+  if (facts.length) card.append(node('p', facts.join(' · '), 'eyebrow'));
+  card.append(node('p', inst.about.text));
+  const src = node('p', null, 'about-source'); src.append(node('span', `Википедия (${inst.about.lang}), ${inst.about.license} · `), link('читать статью', inst.about.url));
+  card.append(src);
+}
+
+// ---- Ask ----------------------------------------------------------------------
+const ASK_SUGGESTIONS = ['Есть ли общежитие?', 'Сколько до центра города?', 'Что говорят студенты?', 'Когда основан вуз?', 'Есть ли фото библиотеки?'];
+function renderAsk() {
+  const chips = $('ask-chips'); chips.replaceChildren(); $('ask-answer').replaceChildren();
+  for (const q of ASK_SUGGESTIONS) {
+    const b = node('button', q); b.type = 'button';
+    b.addEventListener('click', () => { $('ask-input').value = q; askQuestion(q); });
+    chips.append(b);
+  }
+}
+async function askQuestion(question) {
+  const box = $('ask-answer'); const ror = state.profile.institution.ror_id;
+  box.className = 'ask-answer'; box.replaceChildren(node('p', 'Ищу ответ в собранных источниках…', 'hint'));
+  try {
+    const data = await api(`/api/profiles/${ror}/ask?q=${encodeURIComponent(question)}`);
+    if (state.profile?.institution.ror_id !== ror) return;
+    box.replaceChildren(node('p', data.answer));
+    box.classList.toggle('not-found', !data.found);
+    if (data.sources?.length) {
+      const refs = node('div', null, 'ask-sources'); refs.append(node('span', 'Источники:'));
+      for (const s of data.sources) refs.append(link(`[${s.id}] ${s.kind}`, s.url));
+      box.append(refs);
+    }
+  } catch (error) { box.replaceChildren(node('p', `Ответ недоступен: ${error.message}`)); box.classList.add('not-found'); }
+}
+$('ask-form')?.addEventListener('submit', (event) => { event.preventDefault(); const q = $('ask-input').value.trim(); if (q.length >= 3) askQuestion(q); });
+
+// ---- News -------------------------------------------------------------------
+async function loadNews() {
+  const ror = state.profile?.institution.ror_id; if (!ror) return;
+  $('news-section').hidden = true;
+  try {
+    const data = await api(`/api/profiles/${ror}/news`);
+    if (state.profile?.institution.ror_id !== ror) return;
+    state.news = data;
+    const list = $('news-list'); list.replaceChildren();
+    for (const n of data.articles || []) {
+      const li = node('li'); li.append(node('span', [n.date, n.domain].filter(Boolean).join('\n'), 'news-meta'));
+      const a = link(n.title, n.url); li.append(a); list.append(li);
+    }
+    $('news-section').hidden = !(data.articles || []).length;
+    renderRail();
+  } catch (_) { /* news are optional */ }
 }

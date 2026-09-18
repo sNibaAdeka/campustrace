@@ -779,6 +779,26 @@ async def build_profile(
         return [pair for batch in batches for pair in batch]
     wikipedia_task = asyncio.ensure_future(wikipedia_images()) if details else None
 
+    async def wikipedia_about() -> dict[str, Any] | None:
+        # A short, attributed description from the encyclopedia (CC BY-SA),
+        # Russian first because the interface is Russian.
+        links = details.get("sitelinks", {}) if isinstance(details, dict) else {}
+        for lang in ("ru", "en", *WIKI_LANGS.get(institution.get("country_code") or "", ())):
+            title = links.get(lang + "wiki", {}).get("title")
+            if not title:
+                continue
+            try:
+                data = await sources.json("wikidata", f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{quote(title.replace(' ', '_'), safe='')}")
+            except SourceError:
+                continue
+            text = clean(data.get("extract"))
+            if text:
+                return {"text": text[:900], "lang": lang, "title": title,
+                        "url": (data.get("content_urls", {}).get("desktop", {}) or {}).get("page") or f"https://{lang}.wikipedia.org/wiki/{quote(title)}",
+                        "license": "CC BY-SA 4.0"}
+        return None
+    about_task = asyncio.ensure_future(wikipedia_about()) if details else None
+
     # Structured sources first. SPARQL runs on a different host than the
     # rate-limited Commons API, so it overlaps with the Commons chain below.
     buildings_task = (asyncio.ensure_future(sources.wikidata_buildings(institution["wikidata_id"]))
@@ -1123,6 +1143,15 @@ async def build_profile(
         for category, count in counts.items()
     }
     institution["city_center_distance"] = city_center_distance(institution)
+    if about_task is not None:
+        try:
+            institution["about"] = await asyncio.wait_for(about_task, timeout=max(0.2, min(2.0, budget_left() - 1)))
+        except (TimeoutError, SourceError):
+            about_task.cancel()
+    inception = next((c.get("mainsnak", {}).get("datavalue", {}).get("value", {}).get("time") for c in
+                      (details.get("claims", {}) if isinstance(details, dict) else {}).get("P571", []) if c.get("rank") != "deprecated"), None)
+    if isinstance(inception, str) and re.match(r"[+-]\d{4}", inception):
+        institution["founded"] = {"year": int(inception[1:5]), "source": f"https://www.wikidata.org/wiki/{institution['wikidata_id']}#P571"}
     description = describe_campus(institution, assets, counts, category_status)
     stage_times["total"] = int((time.monotonic() - started) * 1000)
 

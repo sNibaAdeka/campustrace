@@ -898,3 +898,64 @@ class SocialEmbedTests(unittest.TestCase):
         self.assertIn("/embed/v2/7234567890123456789", social_embed("https://www.tiktok.com/@kbtu/video/7234567890123456789")["embed"])
         self.assertIsNone(social_embed("https://www.instagram.com/kbtu_official/"))
         self.assertIsNone(social_embed("https://evil.example/instagram.com/p/abcde"))
+
+
+class AskTests(unittest.TestCase):
+    PROFILE = {"institution": {"name": "Uni", "ror_id": "0abcdefg1", "city": "Tartu", "country": "Estonia",
+                               "founded": {"year": 1632, "source": "https://www.wikidata.org/wiki/Q1#P571"}},
+               "coverage": {"dormitory": 0, "library": 7}, "assets": []}
+
+    def test_evidence_is_numbered_and_linked(self):
+        from app import ask
+        items = ask.evidence(self.PROFILE, {"sources": [{"platform": "Reddit", "title": "Dorms", "excerpt": "Raatuse 22 is fine", "url": "https://reddit.com/r/x"}]})
+        self.assertTrue(all(i["url"].startswith("https://") for i in items))
+        self.assertIn("1632", " ".join(i["text"] for i in items))
+        self.assertEqual([i["id"] for i in items], [str(n) for n in range(1, len(items) + 1)])
+
+    def test_answer_without_valid_citation_becomes_not_found(self):
+        from app import ask
+        items = ask.evidence(self.PROFILE, None)
+        self.assertFalse(ask.parse('{"found": true, "answer": "Да", "source_ids": [99]}', items)["found"])
+        self.assertFalse(ask.parse('{"found": false, "answer": "x", "source_ids": [1]}', items)["found"])
+        self.assertEqual(ask.parse("garbage", items)["answer"], ask.NOT_FOUND)
+        ok = ask.parse('{"found": true, "answer": "Основан в 1632 году.", "source_ids": [2]}', items)
+        self.assertTrue(ok["found"])
+        self.assertEqual(ok["sources"][0]["url"], "https://www.wikidata.org/wiki/Q1#P571")
+
+
+class NewsTests(unittest.TestCase):
+    def test_only_headlines_naming_the_university(self):
+        from app.news import keep
+        rows = [{"url": "https://mainichi.jp/a", "title": "Kyoto University opens new library", "seendate": "20260912T000000Z", "domain": "mainichi.jp"},
+                {"url": "https://dailykos.com/b", "title": "Overnight News Digest", "seendate": "20260913T000000Z"},
+                {"url": "https://x.jp/c", "title": "Kyoto University of Art and Design show", "seendate": "20260910T000000Z"},
+                {"url": "javascript:alert(1)", "title": "Kyoto University"}]
+        kept = keep(rows, ["Kyoto University"])
+        self.assertEqual([k["url"] for k in kept], ["https://mainichi.jp/a"])
+        self.assertEqual(kept[0]["date"], "2026-09-12")
+
+
+class LlmFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_daily_limit_on_groq_falls_back_to_cerebras(self):
+        from app import llm
+        calls = []
+        def handler(request):
+            calls.append(request.url.host)
+            if request.url.host == "api.groq.com":
+                return httpx.Response(429, text="Rate limit reached ... tokens per day (TPD)")
+            return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": true}'}}]})
+        real = httpx.AsyncClient
+        with patch.dict(os.environ, {"GROQ_API_KEY": "g", "CEREBRAS_API_KEY": "c"}), \
+             patch("app.llm.httpx.AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw)):
+            content, used = await llm.chat([{"role": "user", "content": "x"}])
+        self.assertEqual(calls, ["api.groq.com", "api.cerebras.ai"])
+        self.assertTrue(used.startswith("cerebras:"))
+
+    async def test_all_providers_out_of_quota_reports_daily_limit(self):
+        from app import llm
+        real = httpx.AsyncClient
+        with patch.dict(os.environ, {"GROQ_API_KEY": "g", "CEREBRAS_API_KEY": ""}), \
+             patch("app.llm.httpx.AsyncClient", lambda **kw: real(transport=httpx.MockTransport(lambda r: httpx.Response(429, text="per day")), **kw)):
+            with self.assertRaises(llm.LimitReached) as ctx:
+                await llm.chat([{"role": "user", "content": "x"}])
+        self.assertTrue(ctx.exception.daily)

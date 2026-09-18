@@ -31,7 +31,7 @@ from typing import Any
 
 import httpx
 
-from . import db
+from . import db, llm
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 CACHE_VERSION = "t1"
@@ -44,7 +44,7 @@ MAX_ITEMS = 40
 
 
 def configured() -> bool:
-    return bool(os.getenv("GROQ_API_KEY")) and os.getenv("AI_TEXT_TRIAGE", "1") != "0"
+    return llm.configured() and os.getenv("AI_TEXT_TRIAGE", "1") != "0"
 
 
 def model_name() -> str:
@@ -144,20 +144,12 @@ async def annotate(institution: dict[str, Any], assets: list[dict[str, Any]], *,
             pending.append((index, asset))
     if pending and (deadline is None or time.monotonic() < deadline - 1):
         timeout = 8.0 if deadline is None else max(1.0, min(8.0, deadline - time.monotonic()))
-        payload = {
-            "model": model_name(), "temperature": 0, "max_tokens": 2500, "reasoning_effort": "low",
-            "response_format": {"type": "json_object"},
-            "messages": [{"role": "system", "content": "You classify photo captions. Answer with JSON only."},
-                         {"role": "user", "content": _prompt(institution, pending)}],
-        }
+        messages = [{"role": "system", "content": "You classify photo captions. Answer with JSON only."},
+                    {"role": "user", "content": _prompt(institution, pending)}]
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(GROQ_URL, json=payload,
-                                             headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY']}"})
-                response.raise_for_status()
-                raw = str(((response.json().get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+            raw, stats["model"] = await llm.chat(messages, max_tokens=2500, groq_model=model_name(), timeout=timeout)
             verdicts = parse(raw, {i for i, _ in pending})
-        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+        except (llm.LimitReached, httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
             verdicts, stats["failed"] = {}, True
         for index, asset in pending:
             verdict = verdicts.get(index)

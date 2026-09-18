@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from typing import Any
 
 import httpx
-from . import db
+from . import db, llm
 from .pipeline import names_institution_exactly
 
 
@@ -350,22 +350,28 @@ async def _summarise_with_groq(key: str, name: str, posts: list[dict[str, str]])
 Верни только JSON без markdown: {{"summary":"1–3 предложения", "themes":[{{"title":"тема","finding":"вывод только из источников","confidence":"низкая|средняя", "source_ids":[1]}}], "pros":[{{"text":"коротко","source_ids":[1]}}], "cons":[{{"text":"коротко","source_ids":[2]}}], "caveat":"краткое ограничение"}}.
 
 {evidence}'''
-    payload = {"model": os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"), "messages": [{"role": "system", "content": "Ты аккуратный исследователь. Твои выводы ограничены переданными источниками."}, {"role": "user", "content": prompt}], "temperature": 0.1, "max_tokens": 1800, "response_format":{"type":"json_object"}}
+    messages = [{"role": "system", "content": "Ты аккуратный исследователь. Твои выводы ограничены переданными источниками."},
+                {"role": "user", "content": prompt}]
     try:
-        async with httpx.AsyncClient(timeout=18) as client:
-            response = await client.post(GROQ_URL, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"}, json=payload)
-            response.raise_for_status()
-            raw = str(response.json().get("choices", [{}])[0].get("message", {}).get("content", ""))
-    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+        raw, _ = await llm.chat(messages, max_tokens=1800, groq_model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"), timeout=18)
+    except (llm.LimitReached, httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
         return None
     return _parse_report(raw)
+
+
+def voices_cache_key(institution: dict[str, Any]) -> str:
+    return f"voices:v10:{institution['ror_id']}:{bool(os.getenv('TAVILY_API_KEY'))}:{bool(os.getenv('BRAVE_API_KEY'))}:{bool(os.getenv('GROQ_API_KEY'))}:{reddit_configured()}"
+
+
+def cached_voices(institution: dict[str, Any]) -> dict[str, Any] | None:
+    return db.get_cached(voices_cache_key(institution))
 
 
 async def student_voices(institution: dict[str, Any]) -> dict[str, Any]:
     """Retrieve live public posts, then ask Groq for a source-grounded synthesis."""
     started = time.monotonic()
     name = str(institution["name"])
-    cache_key = f"voices:v10:{institution['ror_id']}:{bool(os.getenv('TAVILY_API_KEY'))}:{bool(os.getenv('BRAVE_API_KEY'))}:{bool(os.getenv('GROQ_API_KEY'))}:{reddit_configured()}"
+    cache_key = voices_cache_key(institution)
     cached = db.get_cached(cache_key)
     if cached: return {**cached, "from_cache":True}
     place = " ".join(str(x) for x in (institution.get("city"), institution.get("country")) if x)
@@ -401,7 +407,7 @@ async def student_voices(institution: dict[str, Any]) -> dict[str, Any]:
                         "community": post['subreddit']})
     if not posts:
         return {"available": True, "summary": "По открытым индексируемым обсуждениям не найдено достаточно релевантных свидетельств, чтобы делать вывод о проживании или студенческом опыте.", "themes": [], "caveat": "Отсутствие выдачи не означает отсутствия отзывов: часть сообществ может быть закрыта или не индексироваться.", "sources": [], "ai_available": bool(os.getenv("GROQ_API_KEY")), "elapsed_ms": int((time.monotonic() - started) * 1000)}
-    report = await _summarise_with_groq(os.getenv("GROQ_API_KEY", ""), name, posts) if os.getenv("GROQ_API_KEY") else None
+    report = await _summarise_with_groq("", name, posts) if llm.configured() else None
     result_report = report or _fallback_report(name, posts)
     themes: list[dict[str, str]] = []
     for item in result_report.get("themes", [])[:4]:

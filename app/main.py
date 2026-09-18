@@ -16,12 +16,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db, triage, vision
+from . import ask as ask_module, db, triage, vision
 from .atlas import build_atlas, campus_geocode_crosscheck, isochrone, enrich_osm
 from .discovery import suggest, SEEDS
 from .integrations import SourceError, Sources, official_youtube_channel
 from .pipeline import VERSION as PIPELINE_VERSION, build_profile, build_preview, institution_summary, latest_student_count, norm
-from .voices import student_voices
+from .voices import cached_voices, student_voices
 
 
 BASE = Path(__file__).resolve().parents[1]
@@ -96,6 +96,7 @@ async def integrations() -> dict[str, Any]:
             "Grok vision (xAI)": bool(os.getenv("GROK_API_KEY")),
             "Vision check (active provider)": vision.provider() and f"{vision.provider()}:{vision.model_name()}",
             "AI caption triage (text)": triage.configured() and triage.model_name(),
+            "Text AI chain": [name for name, key, *_ in __import__("app.llm", fromlist=["x"]).PROVIDERS if os.getenv(key)],
             "Student voices search": "tavily" if os.getenv("TAVILY_API_KEY") else ("groq browser_search" if os.getenv("GROQ_API_KEY") else "reddit archive only"),
             "Openverse client": bool(os.getenv("OPENVERSE_CLIENT_ID")),
             "Mapbox": bool(os.getenv("MAPBOX_TOKEN")),
@@ -365,6 +366,27 @@ async def voices(ror_id: str) -> dict[str, Any]:
         return await asyncio.wait_for(student_voices(profile_data["institution"]), timeout=55)
     except TimeoutError:
         return {'available':False,'reason':'Поиск обсуждений занял больше 55 секунд. Повторите через минуту.'}
+
+
+@app.get("/api/profiles/{ror_id}/news")
+async def news(ror_id: str) -> dict[str, Any]:
+    ror_id = valid_ror(ror_id)
+    profile_data = db.get_profile(ror_id)
+    if not profile_data:
+        raise HTTPException(404, "Build the profile first")
+    from .news import university_news
+    return await university_news(profile_data["institution"])
+
+
+@app.get("/api/profiles/{ror_id}/ask")
+async def ask(ror_id: str, q: str = Query(min_length=3, max_length=300)) -> dict[str, Any]:
+    """Answer a question only from the evidence this profile collected."""
+    ror_id = valid_ror(ror_id)
+    profile_data = db.get_profile(ror_id)
+    if not profile_data:
+        raise HTTPException(404, "Build the profile first")
+    voices_cached = cached_voices(profile_data["institution"])
+    return await ask_module.answer(profile_data, voices_cached, q)
 
 
 @app.get("/api/compare")
