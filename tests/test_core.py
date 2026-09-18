@@ -948,7 +948,10 @@ class LlmFallbackTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {"GROQ_API_KEY": "g", "CEREBRAS_API_KEY": "c"}), \
              patch("app.llm.httpx.AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw)):
             content, used = await llm.chat([{"role": "user", "content": "x"}])
-        self.assertEqual(calls, ["api.groq.com", "api.cerebras.ai"])
+        # every Groq text model is tried (each has its own daily budget), then Cerebras
+        self.assertEqual(calls[-1], "api.cerebras.ai")
+        self.assertEqual(set(calls[:-1]), {"api.groq.com"})
+        self.assertGreaterEqual(len(calls), 3)
         self.assertTrue(used.startswith("cerebras:"))
 
     async def test_all_providers_out_of_quota_reports_daily_limit(self):

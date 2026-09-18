@@ -36,11 +36,18 @@ async def chat(messages: list[dict[str, Any]], *, json_mode: bool = True, max_to
     configured provider refused for quota, httpx.HTTPError on other failures."""
     daily = False
     last_error: Exception | None = None
+    attempts = []
     for name, key_env, url, model_env, default in PROVIDERS:
-        key = os.getenv(key_env)
-        if not key:
+        if not os.getenv(key_env):
             continue
-        model = (groq_model if name == "groq" and groq_model else None) or os.getenv(model_env, default)
+        models = [os.getenv(model_env, default)]
+        if name == "groq":
+            # Each Groq model has its own daily budget: try the preferred one,
+            # then the other text models, before leaving the provider.
+            models = list(dict.fromkeys([groq_model or models[0], models[0], "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]))
+        attempts += [(name, key_env, url, model) for model in models]
+    for name, key_env, url, model in attempts:
+        key = os.getenv(key_env)
         payload: dict[str, Any] = {"model": model, "messages": messages, "temperature": 0, "max_tokens": max_tokens}
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
