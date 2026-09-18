@@ -9,8 +9,10 @@ from app import db, vision
 from app.pipeline import (
     build_profile, classify, commons_asset, deduplicate, describe_campus,
     institution_summary, known_name_in_text, latest_student_count,
-    thumbnail_hashes, _hashable_host,
+    thumbnail_hashes, _hashable_host, VERSION, building_category, open_license,
+    evidence_level, valid_title, usable_subcategory,
 )
+from app.integrations import parse_building_rows
 from app.integrations import Sources, SourceError
 from app.main import profile as get_profile_endpoint
 from app.atlas import build_atlas, crosscheck_points, isochrone
@@ -463,13 +465,13 @@ class PipelineEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_full_build_produces_an_honest_complete_profile(self):
         with tempfile.TemporaryDirectory() as folder, \
-             patch.dict(os.environ, {"DATABASE_PATH": folder + "/t.sqlite3", "GROK_API_KEY": ""}), \
+             patch.dict(os.environ, {"DATABASE_PATH": folder + "/t.sqlite3", "GROK_API_KEY": "", "GROQ_API_KEY": ""}), \
              patch("app.pipeline.thumbnail_hashes", new=AsyncMock(return_value={"hash_attempted": 3, "hash_succeeded": 3})):
             db.initialize()
             result = await build_profile(self.stub_sources(), RECORD)
 
         self.assertEqual(result["profile_status"], "complete")
-        self.assertEqual(result["pipeline_version"], "0.6.0")
+        self.assertEqual(result["pipeline_version"], VERSION)
         # The senate photo must not inflate the campus count.
         categories_found = {a["title"]: a["category"] for a in result["assets"]}
         self.assertEqual(categories_found["Senate of Nazarbayev University.jpg"], "unknown")
@@ -577,3 +579,125 @@ class DescriptionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StructuredEvidenceTests(unittest.TestCase):
+    """v0.7: categories come from structured claims first, keywords last."""
+
+    def setUp(self):
+        self.institution = institution_summary(RECORD)
+        self.institution["campus_coordinates"] = {"lat": 51.09, "lon": 71.40}
+
+    def test_wikidata_type_maps_to_category_and_skips_non_places(self):
+        self.assertEqual(building_category(["residence hall", "building"]), "dormitory")
+        self.assertEqual(building_category(["academic library"]), "library")
+        self.assertEqual(building_category(["sports venue"]), "sports")
+        self.assertEqual(building_category(["university building"]), "campus")
+        self.assertIsNone(building_category(["faculty", "research institute"]))
+        self.assertIsNone(building_category(["space telescope"]))
+
+    def test_only_open_licences_pass(self):
+        for name in ("CC BY-SA 4.0", "CC BY 2.0", "CC0", "Public domain", "CC BY-SA 3.0 de", "GFDL", "PD-US"):
+            self.assertTrue(open_license(name), name)
+        for name in ("", "All rights reserved", "Fair use", "Copyrighted free use?"):
+            self.assertFalse(open_license(name), name)
+
+    def test_sparql_rows_are_parsed_into_commons_titles(self):
+        rows = parse_building_rows({"results": {"bindings": [
+            {"b": {"value": "http://www.wikidata.org/entity/Q1"}, "bLabel": {"value": "Main Library"},
+             "img": {"value": "http://commons.wikimedia.org/wiki/Special:FilePath/Main%20Library_2020.jpg"},
+             "types": {"value": "academic library|building"}},
+            {"b": {"value": "http://www.wikidata.org/entity/Q2"}, "img": {"value": "not a file"}},
+        ]}})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["file"], "File:Main Library 2020.jpg")
+        self.assertEqual(rows[0]["types"], ["academic library", "building"])
+
+    def test_wikidata_building_sets_category_even_without_keywords(self):
+        building = {"qid": "Q9", "label": "Block 7", "types": ["residence hall"], "category": "dormitory"}
+        item = commons_asset(page("IMG_2041.jpg"), self.institution, "wikidata_building", {"building": building})
+        self.assertEqual(item["category"], "dormitory")
+        self.assertIn("wikidata_type", {e["kind"] for e in item["evidence"]})
+
+    def test_geotag_alone_does_not_make_a_campus_photo(self):
+        near = page("Some street view.jpg")
+        near["coordinates"] = [{"lat": 51.0901, "lon": 71.4001}]
+        self.assertIsNone(commons_asset(near, self.institution, "geo"))
+        named = page("Nazarbayev University building in winter.jpg")
+        named["coordinates"] = [{"lat": 51.0901, "lon": 71.4001}]
+        item = commons_asset(named, self.institution, "geo")
+        kinds = {e["kind"] for e in item["evidence"]}
+        self.assertIn("geo_near", kinds)
+        self.assertIn("name_in_text", kinds)
+        self.assertEqual(evidence_level(item), 2)
+
+    def test_non_open_licence_is_rejected_for_structured_hits_too(self):
+        building = {"qid": "Q9", "label": "Block 7", "types": ["residence hall"], "category": "dormitory"}
+        self.assertIsNone(commons_asset(page("Block 7.jpg", "All rights reserved"), self.institution,
+                                        "wikidata_building", {"building": building}))
+
+    def test_disagreeing_vision_does_not_count_as_support(self):
+        asset = {"evidence": [{"kind": "category"}, {"kind": "vision", "supports": False}]}
+        self.assertEqual(evidence_level(asset), 1)
+
+
+class VisionProviderTests(unittest.TestCase):
+    def test_groq_is_used_when_only_groq_key_exists(self):
+        with patch.dict(os.environ, {"GROK_API_KEY": "", "GROQ_API_KEY": "k", "GROQ_VISION_MODEL": ""}):
+            os.environ.pop("GROQ_VISION_MODEL")
+            self.assertEqual(vision.provider(), "groq")
+            self.assertEqual(vision.model_name(), vision.DEFAULT_GROQ_MODEL)
+        with patch.dict(os.environ, {"GROK_API_KEY": "x", "GROQ_API_KEY": "k"}):
+            self.assertEqual(vision.provider(), "xai")
+        with patch.dict(os.environ, {"GROK_API_KEY": "", "GROQ_API_KEY": ""}):
+            self.assertFalse(vision.configured())
+
+    def test_image_is_sent_as_bytes_not_hotlinked(self):
+        ref = vision._image_ref({"_thumb": b"\xff\xd8\xff\xe0rest"})
+        self.assertTrue(ref.startswith("data:image/jpeg;base64,"))
+        self.assertIsNone(vision._image_ref({"image_url": "https://upload.wikimedia.org/x.jpg"}))
+
+
+class CollectionLeakTests(unittest.TestCase):
+    """Kyoto regression: 24 scans of a Paris map were filed as 'library'."""
+
+    def test_scans_and_maps_are_not_campus_photos(self):
+        self.assertFalse(valid_title("File:Turgot map Paris KU 07.jpg"))
+        self.assertFalse(valid_title("File:Chateau de la Tournelle plan.jpg"))
+        self.assertFalse(valid_title("File:Campus_map_2020.png"))
+        self.assertTrue(valid_title("File:Kyoto University Library 2018 a.jpg"))
+        self.assertTrue(valid_title("File:Planetarium building.jpg"))
+
+    def test_collection_subcategories_are_not_followed(self):
+        self.assertFalse(usable_subcategory("Category:Turgot map of Paris, Kyoto University Library copy"))
+        self.assertFalse(usable_subcategory("Category:People of Kyoto University"))
+        self.assertTrue(usable_subcategory("Category:Kyoto University Library"))
+        self.assertTrue(usable_subcategory("Category:Buildings of Kyoto University"))
+        self.assertTrue(usable_subcategory("Category:Department of Earth Sciences building"))
+
+
+class MosaicVisionTests(unittest.TestCase):
+    def test_grid_parsing_keeps_tiles_independent(self):
+        raw = '{"1":{"scene":"library","confidence":0.9,"note":"x"},"2":{"scene":"made_up"},"3":"bad"}'
+        verdicts = vision.parse_grid(raw, 4)
+        self.assertEqual(verdicts[0]["scene"], "library")
+        self.assertEqual(verdicts[1:], [None, None, None])
+        self.assertEqual(vision.parse_grid("not json", 2), [None, None])
+
+    def test_mosaic_is_a_single_jpeg(self):
+        import io
+        from PIL import Image
+        buf = io.BytesIO(); Image.new("RGB", (400, 300), (200, 10, 10)).save(buf, "JPEG")
+        mosaic = vision.build_mosaic([buf.getvalue()] * 3)
+        with Image.open(io.BytesIO(mosaic)) as im:
+            self.assertEqual(im.size, (vision.GRID_TILE * 2, vision.GRID_TILE * 2))
+        self.assertIsNone(vision.build_mosaic([b"not an image"]))
+
+
+class PeopleAreNotPlacesTests(unittest.TestCase):
+    def test_portraits_and_visits_are_not_campus_views(self):
+        for title in ("Prof. Emeritus Dr. Mikio UMEDA of Kyoto University.jpg",
+                      "PM Modi raises concern during Kyoto University visit.jpg"):
+            self.assertEqual(classify(title)[0], "unknown", title)
+        self.assertEqual(classify("Kyoto University Clock Tower building.jpg")[0], "campus")
+        self.assertEqual(classify("Hydrology building.jpg")[0], "campus")

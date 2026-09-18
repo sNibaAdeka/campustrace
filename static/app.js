@@ -10,6 +10,7 @@ const categories = ['campus', 'dormitory', 'classroom', 'library', 'city', 'spor
 // 'unknown' is deliberately a visible bucket rather than a silent deletion: the
 // material has a real source and licence, we simply cannot say what it shows.
 const filters = ['all', ...categories, 'unknown'];
+const evidenceLabels = { wikidata_type: 'Wikidata: здание вуза', depicts: 'Commons: depicts', category: 'Категория Commons', name_in_text: 'Название в файле', geo_near: 'Геотег у кампуса', vision: 'Проверено по изображению' };
 const statusLabels = { city_context: 'Городской контекст', probable: 'Вероятно', unknown: 'Не подтверждено' };
 
 function node(tag, text, cls) {
@@ -80,7 +81,27 @@ function beginResearch(item) {
     window.setTimeout(() => { position = (position + 1) % loaderPhrases.length; phrase.textContent = loaderPhrases[position]; phrase.classList.remove('is-changing'); }, 180);
   }, 3000);
   window.scrollTo({ top: 0, behavior: 'instant' });
+  loadPreview(item.ror_id);
   loadProfile(item.ror_id);
+}
+// First licensed photographs from structured sources (Wikidata) while the
+// full build runs. Each thumbnail links to its primary source.
+async function loadPreview(rorId) {
+  const holder = $('loader-preview'); holder.hidden = true; holder.replaceChildren();
+  const sequence = profileSequence + 1;
+  try {
+    const data = await api(`/api/profiles/${rorId}/preview`);
+    if (sequence !== profileSequence || !state.researching || !data.assets?.length) return;
+    const list = node('ul');
+    for (const item of data.assets.slice(0, 12)) {
+      const li = node('li'), a = node('a'), img = node('img');
+      a.href = item.source_url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+      img.src = String(item.image_url).replace('/960px-', '/330px-'); img.alt = item.title; img.decoding = 'async';
+      a.append(img); li.append(a); list.append(li);
+    }
+    holder.append(node('p', `Первые ${Math.min(12, data.assets.length)} кадров с лицензией и источником${data.from_cache ? '' : ` — за ${(data.elapsed_ms / 1000).toFixed(1)} с`}. Полная проверка продолжается…`), list);
+    holder.hidden = false;
+  } catch (_) { /* the full profile still arrives; the preview is optional */ }
 }
 async function api(url) {
   const base = location.protocol === 'file:' ? 'http://127.0.0.1:8765' : '';
@@ -265,8 +286,17 @@ function renderGallery() {
   if (!selected.length) { holder.append(node('p', 'Для этого раздела пока нет материалов с указанными источниками и лицензиями.', 'gallery-empty')); return; }
   for (const item of selected) {
     const card = node('article', null, 'card');
-    const image = node('img'); image.src = item.image_url; image.alt = item.title; image.loading = 'lazy';
-    image.addEventListener('error', () => image.replaceWith(node('div', 'Превью недоступно. Источник можно открыть в паспорте материала.', 'image-fallback')), { once: true });
+    const image = node('img'); image.src = item.image_url; image.alt = item.title; image.loading = 'lazy'; image.decoding = 'async';
+    if (String(item.image_url).includes('/960px-')) {
+      image.srcset = `${item.image_url.replace('/960px-', '/330px-')} 330w, ${item.image_url} 960w`;
+      image.sizes = '(max-width: 640px) 100vw, 330px';
+    }
+    // Every photograph is a link to its primary source (case requirement).
+    const photoLink = node('a', null, 'card-photo');
+    photoLink.href = item.source_url; photoLink.target = '_blank'; photoLink.rel = 'noopener noreferrer';
+    photoLink.setAttribute('aria-label', `Открыть первоисточник: ${item.title}`);
+    photoLink.append(image);
+    image.addEventListener('error', () => image.replaceWith(node('div', 'Превью недоступно — откройте первоисточник.', 'image-fallback')), { once: true });
     const body = node('div', null, 'card-body');
     const topline = node('div', null, 'card-topline');
     topline.append(node('span', labels[item.category] || item.category, 'card-type'),
@@ -280,6 +310,20 @@ function renderGallery() {
                                    : node('span', item.license || 'Лицензия не указана'));
     credit.append(node('span', ' · '), link('источник', item.source_url));
     body.append(credit);
+    const evidence = (item.evidence || []).filter(e => e.supports !== false);
+    if (evidence.length) {
+      // A count of independent facts, not a probability.
+      const chips = node('ul', null, 'evidence-chips');
+      chips.setAttribute('aria-label', `Подтверждений: ${evidence.length}`);
+      chips.append(node('li', `Подтверждений: ${evidence.length}`, 'evidence-count'));
+      for (const e of evidence) {
+        const chip = node('li', null, 'evidence-chip');
+        chip.title = e.detail || '';
+        chip.append(e.url ? link(evidenceLabels[e.kind] || e.kind, e.url) : node('span', evidenceLabels[e.kind] || e.kind));
+        chips.append(chip);
+      }
+      body.append(chips);
+    }
     if (item.vision?.available) {
       const agreement = String(item.vision.agreement || '');
       const tone = agreement.startsWith('confirmed') ? 'confirmed'
@@ -292,7 +336,7 @@ function renderGallery() {
     const button = node('button', 'Проверить источник'); button.type = 'button';
     button.addEventListener('click', () => showEvidence(item.id));
     if(item.coordinates){const mapButton=node('button','Место съёмки ↗','photo-map-button');mapButton.type='button';mapButton.addEventListener('click',()=>window.CampusAtlas?.showPhoto(item.id));body.append(mapButton);}
-    body.append(button); card.append(image, body); holder.append(card);
+    body.append(button); card.append(photoLink, body); holder.append(card);
   }
 }
 
@@ -302,7 +346,7 @@ async function showEvidence(assetId) {
     const holder = $('evidence-content'); holder.replaceChildren();
     holder.append(node('h3', item.title));
     const dl = node('dl');
-    const scopeLabel = item.scope === 'category' ? 'Тематическая категория' : item.scope === 'search' ? 'Поиск по названию' : item.scope === 'city' ? 'Городской контекст' : item.scope === 'flickr_search' ? 'Поиск Flickr' : item.scope?.startsWith('category_sub:') ? 'Подкатегория источника' : item.scope;
+    const scopeLabel = item.scope === 'wikidata_building' ? 'Здание вуза в Wikidata (P18)' : item.scope === 'depicts' ? 'Структурированные данные Commons (depicts)' : item.scope === 'geo' ? 'Геопоиск Commons у точки кампуса' : item.scope === 'category' ? 'Тематическая категория' : item.scope === 'search' ? 'Поиск по названию' : item.scope === 'city' ? 'Городской контекст' : item.scope === 'flickr_search' ? 'Поиск Flickr' : item.scope?.startsWith('category_sub:') ? 'Подкатегория источника' : item.scope;
     const dateLabel = value => {
       if (!value) return 'Неизвестна';
       const date = new Date(value);
@@ -310,13 +354,14 @@ async function showEvidence(assetId) {
     };
     const visionText = !item.vision ? 'Не выполнялась'
       : !item.vision.available ? 'Не выполнена для этого файла'
-      : `${item.vision.scene_label} (уверенность ${item.vision.confidence}, ${item.vision.model})`;
+      : `${item.vision.scene_label} (${item.vision.model}; самооценка модели не публикуется как вероятность)`;
     const agreementText = !item.vision?.available ? '—'
       : String(item.vision.agreement).startsWith('confirmed') ? 'Текст и изображение согласуются'
       : String(item.vision.agreement).startsWith('conflict') ? 'Текст и изображение расходятся — уверенность понижена'
       : String(item.vision.agreement).startsWith('vision_only') ? 'Категория получена только из изображения'
       : item.vision.agreement;
-    for (const [key, value] of Object.entries({ 'Категория': labels[item.category] || item.category, 'Статус': statusLabels[item.status] || item.status, 'Источник': item.provider, 'Контекст поиска': scopeLabel, 'Автор': item.author, 'Лицензия': item.license, 'Дата публикации/загрузки': dateLabel(item.published_at), 'Дата съёмки': dateLabel(item.captured_at), 'Хеш файла': item.sha1 || 'Нет', 'Визуальный хеш': item.dhash || 'Не вычислен', 'Визуальный классификатор': visionText, 'Согласие двух проверок': agreementText })) {
+    const evidenceText = (item.evidence || []).map(e => `${evidenceLabels[e.kind] || e.kind}${e.supports === false ? ' (не подтверждает)' : ''}: ${e.detail || ''}`).join('; ') || 'Только лицензия и источник';
+    for (const [key, value] of Object.entries({ 'Независимые подтверждения': evidenceText, 'Категория': labels[item.category] || item.category, 'Статус': statusLabels[item.status] || item.status, 'Источник': item.provider, 'Контекст поиска': scopeLabel, 'Автор': item.author, 'Лицензия': item.license, 'Дата публикации/загрузки': dateLabel(item.published_at), 'Дата съёмки': dateLabel(item.captured_at), 'Хеш файла': item.sha1 || 'Нет', 'Визуальный хеш': item.dhash || 'Не вычислен', 'Визуальный классификатор': visionText, 'Согласие двух проверок': agreementText })) {
       dl.append(node('dt', key), node('dd', value));
     }
     holder.append(dl, node('h4', 'Основания'));
@@ -340,7 +385,13 @@ function renderCoverage() {
     const stateLabel = count ? 'Есть материалы с источником'
       : rawStatus === 'source_failed' ? 'Не проверено: источник был недоступен'
       : 'Проверено — материалов не найдено';
-    row.append(amount, node('td', stateLabel));
+    const stateCell = node('td', stateLabel);
+    if (!count && rawStatus !== 'source_failed' && category !== 'city') {
+      // An honest gap is also an invitation: anyone can close it on Commons.
+      const upload = link('добавить фото на Commons ↗', `https://commons.wikimedia.org/wiki/Special:UploadWizard?categories=${encodeURIComponent(state.profile.institution.name)}`);
+      stateCell.append(node('br'), upload);
+    }
+    row.append(amount, stateCell);
     table.append(row);
   }
   const unclassified = state.profile.unclassified_count || 0;

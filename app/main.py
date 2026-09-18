@@ -16,11 +16,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db
+from . import db, vision
 from .atlas import build_atlas, campus_geocode_crosscheck, isochrone, enrich_osm
 from .discovery import suggest, SEEDS
 from .integrations import SourceError, Sources, official_youtube_channel
-from .pipeline import VERSION as PIPELINE_VERSION, build_profile, institution_summary, latest_student_count, norm
+from .pipeline import VERSION as PIPELINE_VERSION, build_profile, build_preview, institution_summary, latest_student_count, norm
 from .voices import student_voices
 
 
@@ -50,6 +50,10 @@ def load_local_env() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     load_local_env()
+    # The adapters read the contact User-Agent at import time, before .env
+    # was loaded; refresh it so Wikimedia and Nominatim see the real contact.
+    from . import integrations
+    integrations.USER_AGENT = os.getenv("CAMPUS_TRACE_USER_AGENT", integrations.USER_AGENT)
     db.initialize()
     yield
 
@@ -88,6 +92,7 @@ async def integrations() -> dict[str, Any]:
             "openrouteservice": bool(os.getenv("OPENROUTESERVICE_API_KEY")),
             "Groq research": bool(os.getenv("GROQ_API_KEY")),
             "Grok vision (xAI)": bool(os.getenv("GROK_API_KEY")),
+            "Vision check (active provider)": vision.provider() and f"{vision.provider()}:{vision.model_name()}",
             "Mapbox": bool(os.getenv("MAPBOX_TOKEN")),
         },
         "basemap": "MapLibre GL + OpenFreeMap (no key required); Mapbox is an optional cross-check only.",
@@ -132,6 +137,25 @@ async def campus_isochrone(ror_id: str, mode: str = "walking", minutes: int = 15
         return {"available": False, "reason": "Точная точка кампуса не подтверждена; расчёт от центра города вводил бы в заблуждение."}
     campus = item["campuses"][0]
     return await isochrone(campus["lat"], campus["lon"], mode, minutes)
+
+
+@app.get("/api/profiles/{ror_id}/preview")
+async def profile_preview(ror_id: str) -> dict[str, Any]:
+    """First licensed photographs in a few seconds, while the full build runs."""
+    ror_id = valid_ror(ror_id)
+    cached = db.get_profile(ror_id)
+    if cached and cached.get("pipeline_version") == PIPELINE_VERSION:
+        return {"institution": cached["institution"], "assets": cached["assets"][:12],
+                "elapsed_ms": 0, "preview": True, "from_cache": True}
+    started = time.monotonic()
+    sources = Sources()
+    try:
+        record = await sources.ror_get(ror_id)
+        return await asyncio.wait_for(build_preview(sources, record, started=started), timeout=10)
+    except (SourceError, TimeoutError) as exc:
+        raise HTTPException(502, "Preview unavailable; the full profile is still being built") from exc
+    finally:
+        await sources.close()
 
 
 @app.get("/api/profiles/{ror_id}")

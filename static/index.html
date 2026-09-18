@@ -12,8 +12,10 @@
   </script>
   <link rel="icon" href="data:,">
   <link id="map-style" rel="stylesheet" href="/static/vendor/maplibre-gl.css">
-  <link id="app-style" rel="stylesheet" href="/static/style.css?v=50">
-  <link rel="stylesheet" href="/static/box-loader.css?v=2">
+  <link rel="preconnect" href="https://thumb.wikimedia.org">
+  <link rel="preconnect" href="https://upload.wikimedia.org">
+  <link id="app-style" rel="stylesheet" href="/static/style.css?v=51">
+  <link rel="stylesheet" href="/static/box-loader.css?v=3">
 </head>
 <body>
   <main class="page-shell">
@@ -59,6 +61,7 @@
         <p id="loader-phrase">Locating the university…</p>
         <button id="loader-cancel" class="loader-cancel" type="button">Back to search</button>
       </div>
+      <div id="loader-preview" class="loader-preview" aria-live="polite" hidden></div>
     </section>
 
     <div id="explorer-shell" hidden>
@@ -255,7 +258,7 @@
   <script id="map-script" src="/static/vendor/maplibre-gl.js" defer></script>
   <script id="atlas-script" src="/static/atlas.js?v=7" defer></script>
   <script id="globe-script" src="/static/globe.js?v=4" defer></script>
-  <script id="app-script" src="/static/app.js?v=30" defer></script>
+  <script id="app-script" src="/static/app.js?v=32" defer></script>
   <script>
     // The app normally runs through FastAPI. This fallback preserves its visual
     // shell when index.html is opened directly from the project folder.
@@ -266,7 +269,7 @@
       document.getElementById('map-script').src = 'vendor/maplibre-gl.js';
       document.getElementById('atlas-script').src = 'atlas.js?v=7';
       document.getElementById('globe-script').src = 'globe.js?v=4';
-      document.getElementById('app-script').src = 'app.js?v=30';
+      document.getElementById('app-script').src = 'app.js?v=32';
       document.addEventListener('submit', (event) => {
         if (event.target?.id !== 'home-search-form') return;
         event.preventDefault();

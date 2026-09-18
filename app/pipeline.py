@@ -25,7 +25,7 @@ from . import vision
 from .integrations import SourceError, Sources
 
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 EXCLUDED = (
     "logo", "logotype", "emblem", "coat of arms", "seal", "flag", "badge", "icon",
@@ -66,6 +66,9 @@ NON_SCENE_TERMS = (
     "choir", "хор", "orchestra", "оркестр", "dance", "танц", "theatre", "театр",
     "exhibition", "выставк", "näitus", "protest", "rally",
     "funeral", "похорон", "grave", "могил", "monument to", "памятник",
+    # People, not places: titles and roles in a file name mean a portrait.
+    " prof ", " dr ", " mr ", " ms ", " mrs ", " pm ", "professor", "emeritus", "minister",
+    "president of", "rector", "ректор", "профессор", "visit", "визит", "shaking hands",
 )
 SCENE_TERMS = (
     "campus", "building", "library", "библиотек", "библиоотек", "кітапхан",
@@ -76,6 +79,53 @@ SCENE_TERMS = (
     "physicum", "golden autumn", "aula", "корпус", "здани", "университеті",
 )
 FLICKR_LICENSES = {"4": "CC BY 2.0", "5": "CC BY-SA 2.0", "9": "CC0", "11": "CC BY 4.0", "12": "CC BY-SA 4.0"}
+# Wikidata P31 labels of an item that belongs to the university → our taxonomy.
+# Order matters: a "residence hall" is also a "building". Anything that does not
+# match (a faculty, a satellite, a publishing house) is not a place and is skipped.
+BUILDING_TYPE_CATEGORY: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("dormitory", ("residence hall", "dormitory", "student housing", "hall of residence", "student residence")),
+    ("library", ("library",)),
+    ("sports", ("stadium", "sports venue", "arena", "gymnasium", "sports hall", "swimming", "athletic", "sports facility")),
+    ("classroom", ("lecture hall", "auditorium", "lecture theatre")),
+    ("campus", ("university building", "academic building", "building", "campus", "courtyard", "quadrangle",
+                "chapel", "observatory", "college of the university", "academic hall", "hall", "tower", "structure")),
+)
+# Open licences only. Anything else is dropped before it can be shown.
+OPEN_LICENSE = re.compile(r"^(cc0|cc[ -]by(-sa)?[ -]?\d(\.\d)?.*|cc[ -]by(-sa)?|public domain|pd.*|attribution.*|gfdl.*|fal|free art license.*)$", re.I)
+GEO_NEAR_METRES = 1500
+
+
+def building_category(types: list[str]) -> str | None:
+    low = [t.casefold() for t in types]
+    for category, terms in BUILDING_TYPE_CATEGORY:
+        if any(term in t for t in low for term in terms):
+            return category
+    return None
+
+
+def open_license(name: str) -> bool:
+    return bool(OPEN_LICENSE.match((name or "").strip()))
+
+
+def distance_m(a: dict[str, Any], b: dict[str, Any]) -> float:
+    lat1, lon1, lat2, lon2 = map(radians, (a["lat"], a["lon"], b["lat"], b["lon"]))
+    return 6371000 * 2 * asin(min(1, sqrt(sin((lat1 - lat2) / 2) ** 2 + cos(lat1) * cos(lat2) * sin((lon1 - lon2) / 2) ** 2)))
+
+
+# Evidence kinds that come from *different* people or systems. The UI shows
+# how many of them agree — a count of facts, never a made-up probability.
+EVIDENCE_LABELS = {
+    "wikidata_type": "Wikidata: объект вуза с типом",
+    "depicts": "Commons: на фото отмечен объект",
+    "category": "Категория Commons вуза",
+    "name_in_text": "Название вуза в названии/описании файла",
+    "geo_near": "Геотег рядом с точкой кампуса",
+    "vision": "Визуальная проверка изображения",
+}
+
+
+def evidence_level(asset: dict[str, Any]) -> int:
+    return len({e["kind"] for e in asset.get("evidence", []) if e.get("supports", True)})
 
 
 def latest_student_count(claims: list[dict[str, Any]], qid: str) -> dict[str, Any] | None:
@@ -156,7 +206,7 @@ def classify(text: str, city_only: bool = False) -> tuple[str, list[str], str]:
     """
     if city_only:
         return "city", [], "city_query"
-    words = norm(text)
+    words = f" {norm(text)} "
     tags = [key for key, terms in TAG_TERMS.items() if any(term in words for term in terms)]
     for key in ("dormitory", "library", "classroom"):
         if any(term in words for term in CATEGORY_TERMS[key]):
@@ -170,9 +220,30 @@ def classify(text: str, city_only: bool = False) -> tuple[str, list[str], str]:
     return "unknown", tags, "event_word" if event_hit else "no_scene_term"
 
 
+# Whole-word markers of documents and holdings rather than places: a library
+# owns maps, manuscripts and scans, but a scan of a map is not the library.
+DOCUMENT_WORDS = re.compile(
+    r"\b(maps?|plan|plans|scan|scans|scanned|manuscripts?|folio|page|pages|book|books|letter|"
+    r"engraving|lithograph|painting|drawing|illustration|diagram|chart|карта|план|рукопис|гравюр)\b", re.I)
+# Subcategories that hold *collections* or *people*, not views of the campus.
+SUBCATEGORY_EXCLUDED = ("map", "plan", "manuscript", "collection", "scan", "copy", "book", "document",
+                        "people", "alumni", "faculty members", "history", "art", "painting", "portrait",
+                        "coat of", "demolished", "events", "logo", "publication", "ukiyo")
+PER_SUBCATEGORY_LIMIT = 6
+
+
 def valid_title(title: str) -> bool:
     low = title.casefold()
-    return low.endswith(PHOTO_EXTENSIONS) and not any(word in low for word in EXCLUDED)
+    return (low.endswith(PHOTO_EXTENSIONS) and not any(word in low for word in EXCLUDED)
+            and not DOCUMENT_WORDS.search(title.rsplit(".", 1)[0].replace("_", " ")))
+
+
+_SUBCATEGORY_EXCLUDED_RE = re.compile(r"\b(" + "|".join(re.escape(t) for t in SUBCATEGORY_EXCLUDED) + r")s?\b", re.I)
+
+
+def usable_subcategory(name: str) -> bool:
+    # Whole words: "art" must not veto "Department of Chemistry".
+    return not _SUBCATEGORY_EXCLUDED_RE.search(name)
 
 
 def known_name_in_text(text: str, names: list[str]) -> bool:
@@ -228,11 +299,14 @@ async def thumbnail_hashes(sources: Sources, assets: list[dict[str, Any]]) -> di
     # Hash as many candidates as the time budget allows, not just the first
     # handful — dedup must run before the final selection, per the case's
     # "удаление одинаковых и визуально похожих" requirement.
-    semaphore = asyncio.Semaphore(8)
+    semaphore = asyncio.Semaphore(10)
     stats = {"hash_attempted": 0, "hash_succeeded": 0}
 
     async def one(asset: dict[str, Any]) -> None:
         url = asset.get("image_url") or ""
+        # A 330 px rendition is plenty for a 9x8 hash and for the vision check,
+        # and it downloads several times faster than the 960 px display thumb.
+        url = url.replace("/960px-", "/330px-")
         host = urlparse(url).hostname or ""
         if not _hashable_host(host):
             return
@@ -243,6 +317,7 @@ async def thumbnail_hashes(sources: Sources, assets: list[dict[str, Any]]) -> di
                 response.raise_for_status()
             if len(response.content) <= 3_000_000:
                 asset["dhash"] = dhash(response.content)
+                asset["_thumb"] = response.content  # reused by the vision check, never serialised
                 if asset["dhash"]:
                     stats["hash_succeeded"] += 1
         except (Exception):  # Thumbnail failure must not discard source metadata.
@@ -273,7 +348,10 @@ def deduplicate(assets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int
     return kept, duplicates
 
 
-def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str) -> dict[str, Any] | None:
+def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str,
+                  extra: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    extra = extra or {}
+    building = extra.get("building")
     title = page.get("title", "")
     info = (page.get("imageinfo") or [{}])[0]
     if not valid_title(title) or not info.get("thumburl") or not info.get("descriptionurl"):
@@ -290,16 +368,25 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str)
         scope == "category" and len(title) <= 58 and
         any(term in norm(title) for term in ("university", "universit", "университет", "ülikool"))
     )
+    building_names = institution.get("building_names") or []
+    building_match = bool(building_names) and known_name_in_text(title, building_names)
+    structured = bool(building) or scope == "depicts"
     if not city_only and scope == "search" and not title_name_match:
         return None
+    # A geotag near the campus says nothing about *which* building; it only
+    # counts when the file also names the university or one of its buildings.
+    if scope == "geo" and not (name_match or building_match):
+        return None
     broad_subcategory = scope.startswith("category_sub:") and "images from" in scope.casefold()
-    if not city_only and (scope == "category" or broad_subcategory) and not title_scene:
+    if not city_only and not structured and (scope == "category" or broad_subcategory) and not title_scene:
         return None
     if city_only and not known_name_in_text(title, [institution.get("city") or ""]):
         return None
     if city_only and any(term in title.casefold() for term in ("district", "team", "cycling", "map", "administrative", "район", "карта", "équipe", "man shows", "person")):
         return None
     category, tags, text_evidence = classify(title, city_only)
+    if building and building.get("category"):
+        category, text_evidence = building["category"], "wikidata_type"
     if scope.startswith("category_sub:") and category in ("campus", "unknown"):
         subcategory = scope.split(":", 1)[1]
         if "library" in subcategory.casefold():
@@ -321,9 +408,13 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str)
         reasons.append("Название или описание файла содержит название университета")
     if city_only:
         reasons.append("Файл относится к городу; связь с кампусом не утверждается")
-    if not license_name:
+    if not license_name or not open_license(license_name):
         return None
     reasons.append(f"Лицензия указана: {license_name}")
+    if building:
+        reasons.append(f"Wikidata: «{building.get('label') or building['qid']}» — {', '.join(building.get('types') or [])}")
+    if scope == "depicts":
+        reasons.append("Структурированные данные Commons: на снимке отмечен объект университета (depicts)")
     if category == "unknown":
         reasons.append(
             "Сцена не распознана по тексту: в названии есть слово о событии, а не о месте"
@@ -337,10 +428,22 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str)
                         if isinstance(c.get("lat"), (int, float)) and isinstance(c.get("lon"), (int, float))
                         and -90 <= c["lat"] <= 90 and -180 <= c["lon"] <= 180), None)
     reference = institution.get('campus_coordinates') or institution.get('city_coordinates')
+    distance = None
     if coordinates and reference:
-        lat1,lon1,lat2,lon2 = map(radians,(coordinates['lat'],coordinates['lon'],reference['lat'],reference['lon']))
-        distance = 6371 * 2 * asin(min(1,sqrt(sin((lat1-lat2)/2)**2+cos(lat1)*cos(lat2)*sin((lon1-lon2)/2)**2)))
-        if distance > 40: return None
+        distance = distance_m(coordinates, reference)
+        if distance > 40000: return None
+    evidence: list[dict[str, Any]] = []
+    if building:
+        evidence.append({"kind": "wikidata_type", "detail": f"{building.get('label') or building['qid']}: {', '.join(building.get('types') or [])}",
+                         "url": f"https://www.wikidata.org/wiki/{building['qid']}"})
+    if scope == "depicts" or extra.get("depicts"):
+        evidence.append({"kind": "depicts", "detail": "отмечено в структурированных данных файла", "url": info["descriptionurl"]})
+    if scope.startswith("category") and not building:
+        evidence.append({"kind": "category", "detail": scope.split(":", 1)[1] if ":" in scope else "основная категория"})
+    if name_match or building_match:
+        evidence.append({"kind": "name_in_text", "detail": "название здания вуза" if building_match and not name_match else "название вуза"})
+    if distance is not None and distance <= GEO_NEAR_METRES and not city_only and reference is institution.get("campus_coordinates"):
+        evidence.append({"kind": "geo_near", "detail": f"{int(round(distance, -1))} м от точки кампуса (Wikidata P625)"})
     return {
         "id": "commons-" + hashlib.sha256(raw_id).hexdigest()[:20],
         "provider": "Wikimedia Commons", "title": title.removeprefix("File:"),
@@ -351,7 +454,8 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str)
         "published_at": info.get("timestamp"),
         "captured_at": clean(meta.get("DateTimeOriginal")) or None,
         "sha1": info.get("sha1"), "dhash": None, "reasons": reasons,
-        "scope": scope, "text_evidence": text_evidence,
+        "scope": scope, "text_evidence": text_evidence, "evidence": evidence,
+        "distance_m": None if distance is None else int(distance),
         "coordinates": {"lat": coordinates["lat"], "lon": coordinates["lon"],
                         "type": coordinates.get("type", "unknown")} if coordinates else None,
     }
@@ -507,6 +611,13 @@ async def build_profile(
         except SourceError as exc:
             warnings.append(f"Wikidata: {exc.detail}"); incomplete_sources.append("wikidata")
 
+    # Structured sources first. SPARQL runs on a different host than the
+    # rate-limited Commons API, so it overlaps with the Commons chain below.
+    buildings_task = (asyncio.ensure_future(sources.wikidata_buildings(institution["wikidata_id"]))
+                      if institution["wikidata_id"] else None)
+    building_by_file: dict[str, dict[str, Any]] = {}
+    depicts_titles: set[str] = set()
+
     if not category_name:
         category_name = institution['name']
     if category_name:
@@ -520,7 +631,8 @@ async def build_profile(
                 if item.get("ns") == 6:
                     candidates[item["title"]] = "category"
             subcats = [x["title"].removeprefix("Category:") for x in members
-                       if x.get("ns") == 14 and any(t in x["title"].casefold() for t in SUBCATEGORY_TERMS)]
+                       if x.get("ns") == 14 and any(t in x["title"].casefold() for t in SUBCATEGORY_TERMS)
+                       and usable_subcategory(x["title"])]
             for subcat in subcats[:4]:
                 try:
                     members_of_subcat = await sources.commons_category(subcat, limit=200)
@@ -529,7 +641,7 @@ async def build_profile(
                             candidates.setdefault(item["title"], f"category_sub:{subcat}")
                     if any(t in subcat.casefold() for t in ('library','dorm','building','college')):
                         nested = [x["title"].removeprefix("Category:") for x in members_of_subcat
-                                  if x.get("ns") == 14 and not any(t in x['title'].casefold() for t in ('people','alumni','history','art','coat of','demolished'))]
+                                  if x.get("ns") == 14 and usable_subcategory(x["title"])]
                         for child in nested[:2]:
                             for item in await sources.commons_category(child, limit=60):
                                 if item.get("ns") == 6:
@@ -538,6 +650,43 @@ async def build_profile(
                     warnings.append(f"Commons {subcat}: {exc.detail}"); incomplete_sources.append(f"commons_subcat:{subcat}")
         except SourceError as exc:
             warnings.append(f"Commons category: {exc.detail}"); incomplete_sources.append("commons_category")
+
+    buildings: list[dict[str, Any]] = []
+    if buildings_task is not None:
+        try:
+            buildings = await asyncio.wait_for(buildings_task, timeout=max(0.5, min(8.0, budget_left() - 8)))
+        except (SourceError, TimeoutError) as exc:
+            buildings_task.cancel()
+            warnings.append(f"Wikidata SPARQL: {getattr(exc, 'detail', 'таймаут')}"); incomplete_sources.append("wikidata_buildings")
+    typed_buildings = []
+    for row in buildings:
+        category = building_category(row["types"])
+        if not category:
+            continue  # a faculty, a lab-as-organisation, a satellite: not a place
+        row = {**row, "category": category}
+        typed_buildings.append(row)
+        building_by_file.setdefault(row["file"], row)
+        candidates[row["file"]] = "wikidata_building"
+    institution["building_names"] = [b["label"] for b in typed_buildings if len(b["label"]) >= 5][:40]
+    institution["buildings"] = list({b["qid"]: {"qid": b["qid"], "label": b["label"], "category": b["category"]}
+                                     for b in typed_buildings}.values())[:40]
+
+    depicts_qids = [institution["wikidata_id"]] + [b["qid"] for b in typed_buildings] if institution["wikidata_id"] else []
+    if depicts_qids and budget_left() > 8:
+        try:
+            for hit in await sources.commons_depicts(depicts_qids, limit=40):
+                depicts_titles.add(hit["title"])
+                candidates.setdefault(hit["title"], "depicts")
+        except SourceError as exc:
+            warnings.append(f"Commons depicts: {exc.detail}"); incomplete_sources.append("commons_depicts")
+
+    campus_point = institution.get("campus_coordinates")
+    if campus_point and budget_left() > 8:
+        try:
+            for hit in await sources.commons_geosearch(campus_point["lat"], campus_point["lon"], radius_m=800, limit=60):
+                candidates.setdefault(hit["title"], "geo")
+        except SourceError as exc:
+            warnings.append(f"Commons geosearch: {exc.detail}"); incomplete_sources.append("commons_geosearch")
 
     # One category is rarely enough. Search several visual intents while retaining
     # the same conservative title/license filter below.
@@ -588,9 +737,16 @@ async def build_profile(
     groups = {key: [(title, scope) for title, scope in candidates.items()
                     if (scope.startswith("category_sub:") if key == "category_sub" else scope == key)
                     and valid_title(title)]
-              for key in ("category", "category_sub", "search", "city")}
-    selected = (groups["category_sub"][:28] + groups["category"][:32] +
-                groups["search"][:32] + groups["city"][:8])
+              for key in ("wikidata_building", "depicts", "category", "category_sub", "geo", "search", "city")}
+    per_sub: dict[str, int] = defaultdict(int)
+    capped = []
+    for title, scope in groups["category_sub"]:
+        per_sub[scope] += 1
+        if per_sub[scope] <= PER_SUBCATEGORY_LIMIT:
+            capped.append((title, scope))
+    groups["category_sub"] = capped
+    selected = (groups["wikidata_building"][:24] + groups["depicts"][:30] + groups["category_sub"][:24] +
+                groups["category"][:28] + groups["geo"][:24] + groups["search"][:24] + groups["city"][:8])[:150]
     pages: list[dict[str, Any]] = []
     for start in range(0, len(selected), 50):
         try:
@@ -599,7 +755,16 @@ async def build_profile(
             warnings.append(f"Commons metadata: {exc.detail}"); incomplete_sources.append("commons_metadata")
             break
     scope_by_title = dict(selected)
-    assets = [a for p in pages if (a := commons_asset(p, institution, scope_by_title.get(p.get("title", ""), "search")))]
+    assets = []
+    rejected_license = 0
+    for page in pages:
+        page_title = page.get("title", "")
+        extra = {"building": building_by_file.get(page_title), "depicts": page_title in depicts_titles}
+        asset = commons_asset(page, institution, scope_by_title.get(page_title, "search"), extra)
+        if asset:
+            assets.append(asset)
+        elif page.get("imageinfo") and not open_license(clean(((page["imageinfo"][0].get("extmetadata") or {}).get("LicenseShortName")))):
+            rejected_license += 1
     first_asset_ms = int((time.monotonic() - started) * 1000) if assets else None
 
     flickr_candidates = 0
@@ -618,6 +783,7 @@ async def build_profile(
     # Prefer campus content, clearer names, and a spread of categories.
     assets.sort(key=lambda a: (
         a["category"] == "city", a["category"] == "unknown",
+        -evidence_level(a),
         a["scope"] == "search", a["scope"] == "flickr_search",
         not known_name_in_text(a["title"], institution["aliases"]),
     ))
@@ -645,15 +811,28 @@ async def build_profile(
     stage("visual_classifier", vision_started)
     rejected_by_vision = [a for a in assets if a.get("drop")]
     assets = [a for a in assets if not a.pop("drop", False)]
+    for asset in assets:
+        asset.pop("_thumb", None)
+        verdict = asset.get("vision") or {}
+        if verdict.get("available"):
+            agreement = str(verdict.get("agreement", ""))
+            asset.setdefault("evidence", []).append({
+                "kind": "vision", "supports": agreement.startswith(("confirmed", "vision_only")) and "low_confidence" not in agreement,
+                "detail": f"{verdict.get('scene_label')} ({verdict.get('model')})"})
+        asset["evidence_level"] = evidence_level(asset)
+    # Within a category, the best-corroborated photographs come first.
+    assets.sort(key=lambda a: (a["category"] == "city", a["category"] == "unknown", -a["evidence_level"],
+                               -(_year(a.get("captured_at") or a.get("published_at")) or 0)))
     if vision_stats["available"]:
         warnings.append(
             f"Независимая визуальная классификация ({vision_stats['model']}): проверено "
-            f"{vision_stats['checked']}, снято с публикации {vision_stats['rejected']}, "
+            f"{vision_stats['checked']} из {len(assets) + len(rejected_by_vision)}, снято с публикации {vision_stats['rejected']}, "
             f"расхождений с текстом {vision_stats['conflict']}."
+            + (" Лимит запросов провайдера исчерпан — остальные кадры не проверены в этот раз." if vision_stats.get("rate_limited") else "")
         )
     else:
         warnings.append(
-            "Независимая визуальная классификация не выполнена: не задан GROK_API_KEY. "
+            "Независимая визуальная классификация не выполнена: не задан ключ vision-модели (GROK_API_KEY или GROQ_API_KEY). "
             "Категории основаны только на тексте Commons."
         )
 
@@ -686,6 +865,8 @@ async def build_profile(
         "license_eligible_count": license_eligible_count,
         "unique_count": unique_count,
         "duplicate_count": duplicate_count, "warnings": warnings,
+        "rejected_license_count": rejected_license,
+        "evidence_labels": EVIDENCE_LABELS,
         "profile_status": profile_status,
         "category_status": category_status,
         "incomplete_sources": incomplete_sources,
@@ -701,3 +882,53 @@ async def build_profile(
             "понижается. Статус «вероятно» не означает доказанное местоположение."
         ),
     }
+
+
+async def build_preview(sources: Sources, record: dict[str, Any], *, started: float | None = None) -> dict[str, Any]:
+    """First photographs within a few seconds, from structured sources only.
+
+    Wikidata image properties of the university and of its typed buildings,
+    one Commons metadata request, the same licence and title filters as the
+    full build. No hashing and no vision here — the full profile replaces this.
+    """
+    started = time.monotonic() if started is None else started
+    institution = institution_summary(record)
+    qid = institution["wikidata_id"]
+    if not qid:
+        return {"institution": institution, "assets": [], "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "note": "У организации нет Wikidata ID — быстрый предпросмотр невозможен"}
+    details_task = asyncio.ensure_future(sources.wikidata_details(qid))
+    buildings_task = asyncio.ensure_future(sources.wikidata_buildings(qid))
+    titles: dict[str, dict[str, Any] | None] = {}
+    try:
+        details = await details_task
+        claims = details.get("claims", {})
+        for prop in ("P18", "P8517", "P3451", "P5775"):
+            for claim in claims.get(prop, [])[:3]:
+                value = claim.get("mainsnak", {}).get("datavalue", {}).get("value")
+                if isinstance(value, str) and claim.get("rank") != "deprecated":
+                    titles.setdefault("File:" + value, None)
+    except SourceError:
+        pass
+    try:
+        for row in await asyncio.wait_for(buildings_task, timeout=6):
+            category = building_category(row["types"])
+            if category:
+                titles.setdefault(row["file"], {**row, "category": category})
+    except (SourceError, TimeoutError):
+        buildings_task.cancel()
+    selected = [t for t in titles if valid_title(t)][:50]
+    assets: list[dict[str, Any]] = []
+    if selected:
+        try:
+            for page in await sources.commons_imageinfo(selected):
+                building = titles.get(page.get("title", ""))
+                scope = "wikidata_building" if building else "category"
+                if asset := commons_asset(page, institution, scope, {"building": building}):
+                    asset["evidence_level"] = evidence_level(asset)
+                    assets.append(asset)
+        except SourceError:
+            pass
+    assets.sort(key=lambda a: (a["category"] == "unknown", -a["evidence_level"]))
+    return {"institution": institution, "assets": assets[:12],
+            "elapsed_ms": int((time.monotonic() - started) * 1000), "preview": True}

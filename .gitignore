@@ -10,3 +10,4 @@ _to_delete_venv_check/
 _to_delete*/
 data/.fuse_hidden*
 .DS_Store
+.claude/

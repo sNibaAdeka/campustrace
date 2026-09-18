@@ -27,3 +27,12 @@ body.is-researching { overflow:hidden; }
 .research-loader .loader-cancel:hover { background:#202024; color:#fff; }
 @media(max-height:500px) { .research-loader { justify-content:flex-start; gap:8px; } .research-loader .box-loader { height:120px; } }
 @media(prefers-reduced-motion:reduce) { .research-loader .box { animation:none; } .research-loader #loader-phrase { transition:none; } }
+
+/* v0.7 — first verified photographs appear while the full profile is built */
+.loader-preview { width:min(760px, 100%); }
+.loader-preview p { margin:0 0 10px; color:#a1a1aa; font-size:13px; text-align:center; }
+.loader-preview ul { display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr)); gap:8px; margin:0; padding:0; list-style:none; }
+.loader-preview a { display:block; border-radius:4px; overflow:hidden; }
+.loader-preview img { width:100%; aspect-ratio:4 / 3; display:block; object-fit:cover; background:#18181b; opacity:0; animation:preview-in .28s cubic-bezier(.22,1,.36,1) forwards; }
+@keyframes preview-in { to { opacity:1; } }
+@media (prefers-reduced-motion: reduce) { .loader-preview img { animation:none; opacity:1; } }

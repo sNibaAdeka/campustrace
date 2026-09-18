@@ -785,3 +785,11 @@ body.has-profile .intro-copy { display:none; }
 body.has-profile .intro { display:block; margin-bottom:26px; }
 body.has-profile .search-panel { border:1px solid var(--line); background:var(--surface); }
 .search-panel { border:1px solid var(--line); background:var(--surface); }
+
+/* v0.7 — photo links to its source; evidence chips (counts, not probabilities) */
+.card-photo { display: block; border-radius: var(--radius); }
+.card-photo:hover img { opacity: .92; }
+.evidence-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; font-size: 12px; }
+.evidence-chips li { padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
+.evidence-chips .evidence-count { border-color: var(--accent); color: var(--ink); font-weight: 650; }
+.evidence-chips a { color: inherit; }

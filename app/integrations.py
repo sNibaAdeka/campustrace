@@ -12,6 +12,7 @@ import time
 import hashlib
 import re
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 from . import db
@@ -56,7 +57,7 @@ class Sources:
     ) -> Any:
         start = time.monotonic()
         cache_key = None
-        if provider in {"commons", "wikidata", "ror"}:
+        if provider in {"commons", "wikidata", "ror", "wdqs"}:
             cache_key = provider + ':' + hashlib.sha256(json.dumps([url, params], sort_keys=True).encode()).hexdigest()
             cached = db.get_cached(cache_key)
             if cached is not None:
@@ -173,6 +174,50 @@ class Sources:
                     "srnamespace": "6", "srlimit": str(limit), "format": "json"},
         )
         return data.get("query", {}).get("search", [])
+
+    async def commons_depicts(self, qids: list[str], limit: int = 40) -> list[dict[str, Any]]:
+        """Files whose structured data says they *depict* one of these items.
+
+        Commons "depicts" (P180) is a statement a person made about the image
+        content, which is stronger evidence than a word in a file name.
+        """
+        qids = [q for q in qids if re.fullmatch(r"Q\d+", q or "")][:12]
+        if not qids:
+            return []
+        return await self.commons_search("haswbstatement:" + "|".join(f"P180={q}" for q in qids), limit=limit)
+
+    async def commons_geosearch(self, lat: float, lon: float, radius_m: int = 700, limit: int = 60) -> list[dict[str, Any]]:
+        data = await self.json(
+            "commons", "https://commons.wikimedia.org/w/api.php",
+            params={"action": "query", "list": "geosearch", "gscoord": f"{lat}|{lon}",
+                    "gsradius": str(min(10000, max(10, radius_m))), "gsnamespace": "6",
+                    "gslimit": str(limit), "format": "json"},
+        )
+        return data.get("query", {}).get("geosearch", [])
+
+    async def wikidata_buildings(self, qid: str) -> list[dict[str, Any]]:
+        """Items that are part of / operated / owned by the university and have
+        an image, together with their Wikidata types (library, residence hall…).
+
+        The type is a structured claim, so it can place a photo in a category
+        without guessing from words in the file name.
+        """
+        if not re.fullmatch(r"Q\d+", qid or ""):
+            return []
+        query = (
+            'SELECT ?b ?bLabel ?img (GROUP_CONCAT(DISTINCT ?typeLabel; separator="|") AS ?types) WHERE {\n'
+            f'  ?b wdt:P361|wdt:P137|wdt:P127 wd:{qid} .\n'
+            '  ?b wdt:P18 ?img .\n'
+            '  OPTIONAL { ?b wdt:P31 ?type . ?type rdfs:label ?typeLabel . FILTER(LANG(?typeLabel)="en") }\n'
+            '  OPTIONAL { ?b rdfs:label ?bLabel . FILTER(LANG(?bLabel)="en") }\n'
+            '} GROUP BY ?b ?bLabel ?img LIMIT 80'
+        )
+        data = await self.json(
+            "wdqs", "https://query.wikidata.org/sparql",
+            params={"query": query, "format": "json"},
+            headers={"Accept": "application/sparql-results+json"},
+        )
+        return parse_building_rows(data)
 
     async def commons_imageinfo(self, titles: list[str]) -> list[dict[str, Any]]:
         if not titles:
@@ -292,6 +337,23 @@ class Sources:
             headers={"X-Subscription-Token": key},
         )
         return data.get("web", {}).get("results", [])
+
+
+def parse_building_rows(data: Any) -> list[dict[str, Any]]:
+    """SPARQL JSON → [{qid, label, file, types}]. Pure, unit tested."""
+    rows = []
+    for row in (data.get("results", {}).get("bindings", []) if isinstance(data, dict) else []):
+        image = (row.get("img") or {}).get("value", "")
+        item = (row.get("b") or {}).get("value", "")
+        if "Special:FilePath/" not in image or "/entity/Q" not in item:
+            continue
+        rows.append({
+            "qid": item.rsplit("/", 1)[-1],
+            "label": (row.get("bLabel") or {}).get("value") or "",
+            "file": "File:" + unquote(image.split("Special:FilePath/", 1)[1]).replace("_", " "),
+            "types": [t for t in ((row.get("types") or {}).get("value") or "").split("|") if t],
+        })
+    return rows
 
 
 def official_youtube_channel(ror_id: str) -> str | None:
