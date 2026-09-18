@@ -400,7 +400,7 @@ docker run -p 8000:8000 -v campustrace-data:/data \
 ## 12. Тесты
 
 ```bash
-python3 -m unittest discover -s tests -v   # 76 тестов
+python3 -m unittest discover -s tests -v   # 82 теста
 python3 -m compileall -q app
 node --check static/app.js
 ```
