@@ -625,15 +625,16 @@ async def build_profile(
             # Two pages of the main category whenever the budget allows: the
             # first page alone is alphabetical and routinely stops before the
             # dormitory/library files (P1.5).
-            members = await sources.commons_category(
-                category_name, limit=500, pages=2 if budget_left() > 14 else 1)
+            # One page (up to 500 members): Commons requests are serial by
+            # Wikimedia etiquette, so request count is what the user waits for.
+            members = await sources.commons_category(category_name, limit=500, pages=1)
             for item in members:
                 if item.get("ns") == 6:
                     candidates[item["title"]] = "category"
             subcats = [x["title"].removeprefix("Category:") for x in members
                        if x.get("ns") == 14 and any(t in x["title"].casefold() for t in SUBCATEGORY_TERMS)
                        and usable_subcategory(x["title"])]
-            for subcat in subcats[:4]:
+            for subcat in subcats[:3]:
                 if budget_left() < 14:
                     incomplete_sources.append("commons_subcategories")
                     warnings.append("Часть подкатегорий Commons пропущена: не хватило времени в бюджете")
@@ -646,7 +647,7 @@ async def build_profile(
                     if any(t in subcat.casefold() for t in ('library','dorm','building','college')):
                         nested = [x["title"].removeprefix("Category:") for x in members_of_subcat
                                   if x.get("ns") == 14 and usable_subcategory(x["title"])]
-                        for child in nested[:2]:
+                        for child in nested[:1]:
                             if budget_left() < 15:
                                 break
                             for item in await sources.commons_category(child, limit=60):
@@ -696,14 +697,14 @@ async def build_profile(
 
     # One category is rarely enough. Search several visual intents while retaining
     # the same conservative title/license filter below.
-    if len(candidates) < 90:
+    if len(candidates) < 60:
         # Three focused searches preserve useful variety while keeping below
         # Wikimedia's public API burst limits for a fresh university profile.
         visual_queries = [
             f'"{institution["name"]}"',
             f'"{institution["name"]}" (library OR dormitory OR interior)',
             f'"{institution["name"]}" (campus OR library OR students)',
-        ]
+        ][:1 if len(candidates) > 20 else 3]
         for query in visual_queries:
             if budget_left() < 6:
                 incomplete_sources.append("commons_search")
@@ -752,7 +753,7 @@ async def build_profile(
             capped.append((title, scope))
     groups["category_sub"] = capped
     selected = (groups["wikidata_building"][:24] + groups["depicts"][:30] + groups["category_sub"][:24] +
-                groups["category"][:28] + groups["geo"][:24] + groups["search"][:24] + groups["city"][:8])[:150]
+                groups["category"][:28] + groups["geo"][:24] + groups["search"][:24] + groups["city"][:8])[:100]
     pages: list[dict[str, Any]] = []
     for start in range(0, len(selected), 50):
         if start and budget_left() < 7:

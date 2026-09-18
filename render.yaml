@@ -26,7 +26,7 @@ services:
       - key: FLICKR_API_KEY
         sync: false
       - key: PROFILE_BUDGET_SECONDS
-        value: "26"
+        value: "24"
       - key: DATABASE_PATH
         value: /tmp/campustrace.sqlite3
     # Free instances cannot mount a persistent disk. The SQLite cache then lives

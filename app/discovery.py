@@ -100,7 +100,7 @@ async def suggest(query: str, page: int = 1) -> dict[str, Any]:
         primary = normalized(item['name'])
         priority = relevance + (25 if q in primary else 0)
         if item['ror_id'] in wikidata_order:
-            priority += 200 - 20 * wikidata_order.index(item['ror_id'])
+            priority += 1000 - 100 * wikidata_order.index(item["ror_id"])
         if 'university' in primary or 'университет' in item['name'].lower(): priority += 6
         if any(word in primary for word in ('center ', 'centre ', 'hospital ', 'institute of')): priority -= 12
         return (-priority, len(primary), primary)
