@@ -201,6 +201,14 @@ async def _build(ror_id: str, cached: dict[str, Any] | None) -> dict[str, Any]:
             result["warnings"].append("Профиль не сохранён в кэш: внешние источники временно недоступны")
             result["from_cache"] = False
             return result
+        if (cached and cached.get("pipeline_version") == PIPELINE_VERSION and result["profile_status"] == "partial"
+                and cached.get("profile_status") == "complete" and len(cached["assets"]) >= len(result["assets"])):
+            # A refresh that lost a source (rate limit, timeout) must not replace
+            # a complete profile with a poorer one.
+            cached["from_cache"] = True
+            cached.setdefault("warnings", []).append(
+                "Обновление получилось неполным (" + ", ".join(result["incomplete_sources"]) + "); сохранена предыдущая полная версия")
+            return cached
         db.save_profile(result, record)
         result["from_cache"] = False
         return result

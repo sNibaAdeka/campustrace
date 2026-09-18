@@ -27,6 +27,7 @@ _nominatim_last = 0.0
 _commons_lock = asyncio.Lock()
 _commons_last = 0.0
 _commons_retry_at = 0.0
+_openverse_token: dict[str, Any] = {"value": None, "expires": 0.0}
 
 
 class SourceError(Exception):
@@ -258,10 +259,23 @@ class Sources:
         Anonymous access is limited (20/min, 200/day), so every answer is
         cached for 24 h by ``json`` and a 429 is reported, not retried.
         """
+        headers = None
+        if os.getenv("OPENVERSE_CLIENT_ID") and os.getenv("OPENVERSE_CLIENT_SECRET"):
+            # Registered (free) client: ~100 requests/min and 10 000/day instead of 20/min and 200/day.
+            if time.time() > _openverse_token["expires"] - 60:
+                reply = await self.client.post(
+                    "https://api.openverse.org/v1/auth_tokens/token/",
+                    data={"grant_type": "client_credentials", "client_id": os.environ["OPENVERSE_CLIENT_ID"],
+                          "client_secret": os.environ["OPENVERSE_CLIENT_SECRET"]})
+                if reply.status_code == 200:
+                    body = reply.json()
+                    _openverse_token.update(value=body.get("access_token"), expires=time.time() + float(body.get("expires_in", 3600)))
+            if _openverse_token["value"]:
+                headers = {"Authorization": f"Bearer {_openverse_token['value']}"}
         data = await self.json(
             "openverse", "https://api.openverse.org/v1/images/",
             params={"q": query, "license": "by,by-sa,cc0,pdm", "page_size": str(limit),
-                    "mature": "false"},
+                    "mature": "false"}, headers=headers,
         )
         return [x for x in (data.get("results", []) if isinstance(data, dict) else [])
                 if x.get("source") not in ("wikimedia", "wikimedia_commons")]
