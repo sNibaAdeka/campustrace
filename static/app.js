@@ -262,6 +262,7 @@ async function loadVoices() {
     const data = await api(`/api/profiles/${profile.institution.ror_id}/student-voices`);
     if (state.profile?.institution.ror_id !== profile.institution.ror_id) return;
     renderVoices(holder, data);
+    renderSocialPosts(data.social_posts);
     status(`Исследование отзывов готово за ${Math.max(1, Math.round(data.elapsed_ms / 1000))} с.`, 'success');
   } catch (error) { if (state.profile?.institution.ror_id === profile.institution.ror_id) holder.replaceChildren(node('p', `Отзывы недоступны: ${error.message}`, 'hint')); }
   finally { if (state.profile?.institution.ror_id === profile.institution.ror_id) $('voices-refresh').disabled = false; }
@@ -286,7 +287,7 @@ function renderProfile() {
   log.append(node('summary', `Журнал проверки: ${notes.length} ${notes.length === 1 ? 'запись' : notes.length < 5 ? 'записи' : 'записей'} — что проверено, что пропущено и почему`));
   const body = node('div', null, 'tech-body'); for (const w of notes) body.append(node('p', w)); log.append(body);
   $('warnings').replaceChildren(...(notes.length ? [log] : []));
-  renderProfileStatus(); renderFacts(); renderHero();
+  renderProfileStatus(); renderFacts(); renderHero(); renderSocial();
   renderFilters(); renderGallery(); renderCoverage(); renderFunnel();
 }
 
@@ -764,3 +765,59 @@ $('viewer-close')?.addEventListener('click', closeViewer);
 $('viewer-prev')?.addEventListener('click', () => stepViewer(-1));
 $('viewer-next')?.addEventListener('click', () => stepViewer(1));
 $('photo-viewer')?.addEventListener('click', (event) => { if (event.target.id === 'photo-viewer') closeViewer(); });
+
+// Official social accounts (Wikidata) and public posts found by the search.
+// Everything is shown through the platform's own embed or as a link: the page
+// never copies a social-media photo, and none of it enters the photo checks.
+const SOCIAL_URL = {
+  instagram: h => `https://www.instagram.com/${h}/`, tiktok: h => `https://www.tiktok.com/@${h}`,
+  facebook: h => `https://www.facebook.com/${h}`, vk: h => `https://vk.com/${h}`, telegram: h => `https://t.me/${h}`,
+  x: h => `https://x.com/${h}`, linkedin: h => `https://www.linkedin.com/company/${h}`,
+};
+const SOCIAL_NAME = { instagram: 'Instagram', tiktok: 'TikTok', facebook: 'Facebook', vk: 'VK', telegram: 'Telegram', x: 'X', linkedin: 'LinkedIn', youtube: 'YouTube' };
+function socialFrame(src, title, cls) {
+  const frame = node('iframe', null, cls);
+  frame.src = src; frame.title = title; frame.loading = 'lazy';
+  frame.setAttribute('allow', 'encrypted-media; picture-in-picture; fullscreen');
+  frame.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+  frame.setAttribute('allowfullscreen', '');
+  return frame;
+}
+function renderSocial() {
+  const inst = state.profile.institution, social = { ...(inst.social || {}) };
+  if (inst.youtube_channel) social.youtube = inst.youtube_channel;
+  const section = $('social-section'), links = $('social-links'), embeds = $('social-embeds');
+  links.replaceChildren(); embeds.replaceChildren(); $('social-posts').replaceChildren();
+  const names = Object.keys(social);
+  section.hidden = !names.length;
+  if (!names.length) return;
+  for (const name of names) {
+    const url = name === 'youtube' ? `https://www.youtube.com/channel/${social.youtube}` : SOCIAL_URL[name]?.(social[name]);
+    if (!url) continue;
+    const chip = node('a', null, 'social-chip'); chip.href = url; chip.target = '_blank'; chip.rel = 'noopener noreferrer';
+    chip.append(platformDot(SOCIAL_NAME[name]), node('span', `${SOCIAL_NAME[name]} · ${name === 'youtube' ? 'канал' : '@' + social[name]}`));
+    links.append(chip);
+  }
+  // Instagram's profile widget no longer shows posts without a login, so the
+  // account is a link; individual posts found by the search are embedded below.
+  if (social.youtube && /^UC[\w-]{22}$/.test(social.youtube)) {
+    const box = node('figure', null, 'social-embed');
+    box.append(socialFrame(`https://www.youtube-nocookie.com/embed/videoseries?list=UU${social.youtube.slice(2)}`, 'Видео официального YouTube-канала', 'embed-video'));
+    box.append(node('figcaption', 'Последние видео официального YouTube-канала — плеер YouTube'));
+    embeds.append(box);
+  }
+}
+function renderSocialPosts(posts) {
+  const holder = $('social-posts'); holder.replaceChildren();
+  if (!posts?.length) return;
+  $('social-section').hidden = false;
+  holder.append(node('h4', 'Публичные посты о вузе, найденные поиском'));
+  const grid = node('div', null, 'social-post-grid');
+  for (const post of posts) {
+    const box = node('figure', null, 'social-embed');
+    box.append(socialFrame(post.embed, `${post.platform}: ${post.title || 'пост'}`, post.platform === 'YouTube' ? 'embed-video' : 'embed-post'));
+    const cap = node('figcaption'); cap.append(node('span', `${post.platform}${post.official ? ' · официальный аккаунт' : ''} · `), link('открыть оригинал', post.url));
+    box.append(cap); grid.append(box);
+  }
+  holder.append(grid);
+}

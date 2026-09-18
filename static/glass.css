@@ -55,7 +55,7 @@ body.has-profile::before {
 body.has-profile .site-header,
 .profile-overview, #warnings:not(:empty), .sidebar-sticky, .card,
 .description-section, .insights-section, .context-section, .voices-section,
-.compare-section, .methodology, .atlas-section .map-stage, .atlas-tools, .walk-panel, .reachability-panel,
+.compare-section, .social-section, .methodology, .atlas-section .map-stage, .atlas-tools, .walk-panel, .reachability-panel,
 .search-results:not(:empty), #evidence-dialog, .viewer-panel {
   background: var(--glass);
   border: 1px solid var(--glass-edge);
@@ -301,3 +301,17 @@ button.card-photo { width: 100%; padding: 0; margin: 0; border: 0; background: n
 .tech-log .tech-body { padding: 8px 16px 12px; }
 #warnings:not(:empty) { padding: 0; border-left: 0; background: transparent; box-shadow: none; border: 0; -webkit-backdrop-filter: none; backdrop-filter: none; }
 body { font-family: "Inter", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+.social-section { margin-top: 22px; padding: clamp(18px, 2.6vw, 30px); }
+.social-section[hidden] { display: none; }
+.social-links { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 16px; }
+.social-chip { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 14px 6px 8px; border-radius: 999px;
+  background: rgba(255, 255, 255, .06); border: 1px solid var(--glass-edge); color: var(--ink); text-decoration: none; font-size: 13.5px; }
+.social-chip:hover { background: rgba(255, 255, 255, .12); color: var(--ink); }
+.social-embeds, .social-post-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.social-embed { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.social-embed iframe { width: 100%; border: 0; border-radius: 16px; background: #fff; }
+.social-embed .embed-instagram { height: 520px; }
+.social-embed .embed-post { height: 560px; }
+.social-embed .embed-video { aspect-ratio: 16 / 9; height: auto; background: #000; }
+.social-embed figcaption { font-size: 12px; color: var(--muted); }
+.social-posts h4 { margin: 22px 0 12px; }

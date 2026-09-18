@@ -172,6 +172,23 @@ def platform_of(url: str) -> tuple[str, str]:
     return host or "web", "news" if any(w in host for w in ("news", "times", "post", "herald", "tribune", "gazette", "journal")) else "web"
 
 
+def social_embed(url: str) -> dict[str, str] | None:
+    """A public post URL -> the platform's official embed. Pure, unit tested."""
+    m = re.match(r"https?://(?:www\.)?instagram\.com/(?:[A-Za-z0-9_.]+/)?(p|reel)/([A-Za-z0-9_-]{5,20})", url)
+    if m:
+        return {"platform": "Instagram", "url": f"https://www.instagram.com/{m.group(1)}/{m.group(2)}/",
+                "embed": f"https://www.instagram.com/{m.group(1)}/{m.group(2)}/embed/captioned/"}
+    m = re.match(r"https?://(?:www\.|m\.)?youtube\.com/(?:watch\?v=|shorts/)([A-Za-z0-9_-]{11})", url) or \
+        re.match(r"https?://youtu\.be/([A-Za-z0-9_-]{11})", url)
+    if m:
+        return {"platform": "YouTube", "url": f"https://www.youtube.com/watch?v={m.group(1)}",
+                "embed": f"https://www.youtube-nocookie.com/embed/{m.group(1)}"}
+    m = re.match(r"https?://(?:www\.)?tiktok\.com/@[A-Za-z0-9_.]+/video/(\d{8,25})", url)
+    if m:
+        return {"platform": "TikTok", "url": url.split("?")[0], "embed": f"https://www.tiktok.com/embed/v2/{m.group(1)}"}
+    return None
+
+
 TEXT_ONLY_NOTE = (
     "Публичные обсуждения используются только как текстовое свидетельство: заголовок, "
     "короткая цитата и ссылка на первоисточник. Фотографии из Instagram, Threads и других "
@@ -348,7 +365,7 @@ async def student_voices(institution: dict[str, Any]) -> dict[str, Any]:
     """Retrieve live public posts, then ask Groq for a source-grounded synthesis."""
     started = time.monotonic()
     name = str(institution["name"])
-    cache_key = f"voices:v9:{institution['ror_id']}:{bool(os.getenv('TAVILY_API_KEY'))}:{bool(os.getenv('BRAVE_API_KEY'))}:{bool(os.getenv('GROQ_API_KEY'))}:{reddit_configured()}"
+    cache_key = f"voices:v10:{institution['ror_id']}:{bool(os.getenv('TAVILY_API_KEY'))}:{bool(os.getenv('BRAVE_API_KEY'))}:{bool(os.getenv('GROQ_API_KEY'))}:{reddit_configured()}"
     cached = db.get_cached(cache_key)
     if cached: return {**cached, "from_cache":True}
     place = " ".join(str(x) for x in (institution.get("city"), institution.get("country")) if x)
@@ -402,8 +419,22 @@ async def student_voices(institution: dict[str, Any]) -> dict[str, Any]:
                     out.append({"text": item["text"][:200], "source_ids": ids})
         return out
     platforms = sorted({src["platform"] for src in sources})
+    # Public social posts that the search found are returned separately: the
+    # page embeds them with the platform's own widget, never as campus photos.
+    social_posts = []
+    official = {v.lower() for v in (institution.get("social") or {}).values()}
+    names = [n for n in [name, *(institution.get("aliases") or [])] if len(n) >= 3]
+    for post in [p for batch in batches if isinstance(batch, list) for p in batch]:
+        embed = social_embed(post["url"])
+        if not embed or embed in social_posts:
+            continue
+        by_official = any(f"/{handle}/" in post["url"].lower() or f"@{handle}" in post["url"].lower() for handle in official)
+        if by_official or names_institution_exactly(f"{post['title']} {post['excerpt']}", names):
+            embed["title"] = post["title"][:160]
+            embed["official"] = by_official
+            social_posts.append(embed)
     result = {"available": True, "summary": str(result_report.get("summary", ""))[:1100], "themes": themes,
-              "pros": grounded("pros"), "cons": grounded("cons"), "platforms": platforms, "caveat": str(result_report.get("caveat", ""))[:500], "sources": sources, "ai_available": report is not None, "media_policy": TEXT_ONLY_NOTE, "elapsed_ms": int((time.monotonic() - started) * 1000)}
+              "pros": grounded("pros"), "cons": grounded("cons"), "platforms": platforms, "social_posts": social_posts[:9], "caveat": str(result_report.get("caveat", ""))[:500], "sources": sources, "ai_available": report is not None, "media_policy": TEXT_ONLY_NOTE, "elapsed_ms": int((time.monotonic() - started) * 1000)}
     # A summary lost to a rate limit must not be frozen for a day.
     db.set_cached(cache_key, result, 86400 if (report is not None or not os.getenv("GROQ_API_KEY")) else 600)
     return result

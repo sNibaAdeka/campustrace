@@ -887,3 +887,14 @@ class TavilyTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {"TAVILY_API_KEY": ""}):
             async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: (_ for _ in ()).throw(AssertionError("called")))) as client:
                 self.assertEqual(await _tavily_search(client, "X", "Y"), [])
+
+
+class SocialEmbedTests(unittest.TestCase):
+    def test_only_public_post_urls_become_official_embeds(self):
+        from app.voices import social_embed
+        ig = social_embed("https://www.instagram.com/p/C1bQ5bXO4bR/?utm_source=x")
+        self.assertEqual(ig["embed"], "https://www.instagram.com/p/C1bQ5bXO4bR/embed/captioned/")
+        self.assertEqual(social_embed("https://youtu.be/dQw4w9WgXcQ")["embed"], "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ")
+        self.assertIn("/embed/v2/7234567890123456789", social_embed("https://www.tiktok.com/@kbtu/video/7234567890123456789")["embed"])
+        self.assertIsNone(social_embed("https://www.instagram.com/kbtu_official/"))
+        self.assertIsNone(social_embed("https://evil.example/instagram.com/p/abcde"))

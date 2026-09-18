@@ -739,6 +739,14 @@ async def build_profile(
                             institution['campus_coordinates'] = {'lat': value['latitude'], 'lon': value['longitude'],
                                 'source': f"https://www.wikidata.org/wiki/{institution['wikidata_id']}#P159", 'precision': 'headquarters_point'}
             institution['subreddit'] = next((v for v in values('P3984') if isinstance(v,str) and re.fullmatch(r'[A-Za-z0-9_]{2,21}', v)), None)
+            # Official accounts recorded in Wikidata. They are shown only through
+            # each platform's own embed widget, never copied as campus photos.
+            social_props = {"instagram": ("P2003", r"[A-Za-z0-9_.]{1,30}"), "tiktok": ("P7085", r"[A-Za-z0-9_.]{2,24}"),
+                            "facebook": ("P2013", r"[A-Za-z0-9_.\-]{2,60}"), "vk": ("P3185", r"[A-Za-z0-9_.]{2,60}"),
+                            "telegram": ("P3789", r"[A-Za-z0-9_]{4,32}"), "x": ("P2002", r"[A-Za-z0-9_]{1,15}"),
+                            "linkedin": ("P4264", r"[A-Za-z0-9_\-.]{2,120}")}
+            institution['social'] = {name: v for name, (prop, pattern) in social_props.items()
+                                     for v in [next((x for x in values(prop) if isinstance(x, str) and re.fullmatch(pattern, x)), None)] if v}
             institution['youtube_channel'] = next((v for v in values('P2397') if isinstance(v,str) and re.fullmatch(r'UC[\w-]{22}',v)), None)
             for prop in ('P18', 'P8517', 'P3451', 'P5775'):
                 for value in values(prop)[:3]:
@@ -904,7 +912,7 @@ async def build_profile(
 
     # One category is rarely enough. Search several visual intents while retaining
     # the same conservative title/license filter below.
-    if len(candidates) < 60:
+    if len(candidates) < 90:
         # Three focused searches preserve useful variety while keeping below
         # Wikimedia's public API burst limits for a fresh university profile.
         visual_queries = [
@@ -912,6 +920,12 @@ async def build_profile(
             f'"{institution["name"]}" (library OR dormitory OR interior)',
             f'"{institution["name"]}" (campus OR library OR students)',
         ][:1 if len(candidates) > 20 else 3]
+        # Local-language names ("Tartu Ülikool", "京都大学") find files that
+        # English queries never reach; one OR-query keeps it to one request.
+        local_names = [a for a in institution.get("aliases", [])
+                       if a != institution["name"] and len(a) >= 4 and not a.isupper() and '"' not in a][:3]
+        if local_names:
+            visual_queries.append(" OR ".join(f'"{a}"' for a in local_names))
         for query in visual_queries:
             if budget_left() < 6:
                 incomplete_sources.append("commons_search")
