@@ -96,6 +96,8 @@ async def integrations() -> dict[str, Any]:
             "Grok vision (xAI)": bool(os.getenv("GROK_API_KEY")),
             "Vision check (active provider)": vision.provider() and f"{vision.provider()}:{vision.model_name()}",
             "AI caption triage (text)": triage.configured() and triage.model_name(),
+            "Student voices search": "tavily" if os.getenv("TAVILY_API_KEY") else ("groq browser_search" if os.getenv("GROQ_API_KEY") else "reddit archive only"),
+            "Openverse client": bool(os.getenv("OPENVERSE_CLIENT_ID")),
             "Mapbox": bool(os.getenv("MAPBOX_TOKEN")),
         },
         "basemap": "MapLibre GL + OpenFreeMap (no key required); Mapbox is an optional cross-check only.",
@@ -360,9 +362,9 @@ async def voices(ror_id: str) -> dict[str, Any]:
     if not profile_data:
         raise HTTPException(404, "Build the profile first")
     try:
-        return await asyncio.wait_for(student_voices(profile_data["institution"]), timeout=30)
+        return await asyncio.wait_for(student_voices(profile_data["institution"]), timeout=55)
     except TimeoutError:
-        return {'available':False,'reason':'Поиск обсуждений занял больше 30 секунд. Повторите через минуту.'}
+        return {'available':False,'reason':'Поиск обсуждений занял больше 55 секунд. Повторите через минуту.'}
 
 
 @app.get("/api/compare")

@@ -127,7 +127,7 @@ def _relevant(posts: list[dict[str, str]], name: str, aliases: list[str] | None 
         if not identity and post.get('provider') == 'Groq web search':
             identity = len(tokens) > 0 and all(t in haystack for t in tokens) and any(w in haystack for w in ('university','college','университет'))
         context = sum(keyword in haystack for keyword in keywords)
-        score = identity * 5 + context
+        score = identity * 5 + context + (3 if post.get('opened') else 0)
         # A university name alone often finds job adverts and news reposts. Keep
         # posts about student life/housing, plus a dedicated campus community.
         if identity and context:
@@ -145,7 +145,10 @@ PLATFORMS = {
     "zakon.kz": "Zakon.kz", "nur.kz": "NUR.KZ", "vuzopedia.ru": "Вузопедия", "tabiturient.ru": "Табитуриент",
     "otzovik.com": "Отзовик", "irecommend.ru": "iRecommend", "studyinjapan.go.jp": "Study in Japan",
     "topuniversities.com": "QS Top Universities", "timeshighereducation.com": "Times Higher Education",
-    "wikipedia.org": "Википедия", "facebook.com": "Facebook", "instagram.com": "Instagram", "x.com": "X", "twitter.com": "X",
+    "wikipedia.org": "Википедия", "2gis.kz": "2ГИС", "2gis.ru": "2ГИС", "2gis.com": "2ГИС",
+    "eduopinions.com": "EduOpinions", "studyportals.com": "Studyportals", "mastersportal.com": "Studyportals",
+    "bachelorsportal.com": "Studyportals", "unirank.org": "uniRank", "hotcourses.com": "Hotcourses",
+    "studocu.com": "Studocu", "tripadvisor.com": "Tripadvisor", "google.com": "Google", "facebook.com": "Facebook", "instagram.com": "Instagram", "x.com": "X", "twitter.com": "X",
     "tiktok.com": "TikTok", "vk.com": "VK", "t.me": "Telegram", "linkedin.com": "LinkedIn",
 }
 # Where the institution's own site or a directory is the source, it is marketing,
@@ -153,13 +156,16 @@ PLATFORMS = {
 KIND_BY_PLATFORM = {"Reddit": "forum", "Quora": "forum", "The Student Room": "forum", "College Confidential": "forum",
                     "Niche": "review_site", "Unigo": "review_site", "StudentCrowd": "review_site", "Whatuni": "review_site",
                     "RateMyProfessors": "review_site", "Glassdoor": "review_site", "Отзовик": "review_site", "iRecommend": "review_site",
-                    "Вузопедия": "review_site", "Табитуриент": "review_site", "YouTube": "video", "Medium": "blog", "Хабр": "blog",
+                    "Вузопедия": "review_site", "Табитуриент": "review_site", "2ГИС": "map_review", "Яндекс Карты": "map_review",
+                    "EduOpinions": "review_site", "Studyportals": "review_site", "Tripadvisor": "map_review", "Google": "map_review", "YouTube": "video", "Medium": "blog", "Хабр": "blog",
                     "vc.ru": "blog", "Facebook": "social", "Instagram": "social", "X": "social", "TikTok": "social",
                     "VK": "social", "Telegram": "social", "LinkedIn": "social"}
 
 
 def platform_of(url: str) -> tuple[str, str]:
     host = (urlparse(url).hostname or "").removeprefix("www.").removeprefix("old.").removeprefix("m.")
+    if re.match(r"yandex\.[a-z]+$", host) and "/maps" in url:
+        return "Яндекс Карты", "map_review"
     for domain, label in PLATFORMS.items():
         if host == domain or host.endswith("." + domain):
             return label, KIND_BY_PLATFORM.get(label, "reference")
@@ -193,6 +199,33 @@ async def _forum_search(client: httpx.AsyncClient, name: str) -> list[dict[str, 
 # Each Groq model has its own per-minute token budget. Browsing is expensive
 # (tens of thousands of tokens of page text), so it runs on its own model and
 # never falls back onto the model that writes the summary and reads captions.
+async def _tavily_search(client: httpx.AsyncClient, name: str, place: str, local: bool = False) -> list[dict[str, Any]]:
+    """Web search API with page snippets (free plan: 1000 searches/month, no
+    card). Fast and cheap, so it replaces model-driven browsing when a key is
+    set; Groq is then used only to summarise what these pages say."""
+    key = os.getenv("TAVILY_API_KEY")
+    if not key:
+        return []
+    queries = [f'"{name}" student reviews dormitory campus life', f'"{name}" отзывы студентов общежитие' if local else f'"{name}" reddit OR quora students experience']
+    posts: list[dict[str, Any]] = []
+    for query in queries:
+        try:
+            response = await client.post("https://api.tavily.com/search", timeout=15, headers={"Authorization": f"Bearer {key}"},
+                                         json={"query": query, "max_results": 10, "search_depth": "basic", "include_answer": False})
+            response.raise_for_status()
+        except httpx.HTTPError:
+            continue
+        for row in response.json().get("results", []):
+            url = _safe_url(row.get("url"))
+            if not url:
+                continue
+            match = re.search(r'reddit\.com/r/([^/]+)', url)
+            posts.append({"title": _text(row.get("title"), 180), "excerpt": _text(row.get("content"), 900), "url": url,
+                          "subreddit": match.group(1) if match else "", "date": row.get("published_date"),
+                          "provider": "Groq web search", "opened": True})
+    return posts
+
+
 SEARCH_MODELS = (os.getenv("GROQ_SEARCH_MODEL", "openai/gpt-oss-120b"),)
 
 
@@ -208,12 +241,13 @@ async def _groq_web_search(client: httpx.AsyncClient, name: str, place: str, loc
         return []
     ask = (f"Find what students say about {name} ({place}): dormitories and housing, campus life, studies, "
            "cost of living. Search forums (Reddit, Quora, The Student Room), student review sites, student media "
-           "and map reviews. List the pages you found.")
+           "and map reviews. Then OPEN and read the 3-4 most relevant pages written by students "
+           "(reviews, forum threads, blog posts), not the university's own site. List the pages you found.")
     if local:
         ask += f" Also search in Russian and Kazakh: «{name} отзывы студентов общежитие»."
     for model in SEARCH_MODELS:
         try:
-            response = await client.post(GROQ_URL, headers={'Authorization': f'Bearer {key}'}, timeout=40, json={
+            response = await client.post(GROQ_URL, headers={'Authorization': f'Bearer {key}'}, timeout=48, json={
                 'model': model, 'messages': [{'role': 'user', 'content': ask}], 'max_tokens': 300,
                 'reasoning_effort': 'low', 'tools': [{'type': 'browser_search'}], 'tool_choice': 'required'})
         except httpx.HTTPError:
@@ -223,19 +257,32 @@ async def _groq_web_search(client: httpx.AsyncClient, name: str, place: str, loc
         if response.status_code != 200:
             return []
         message = (response.json().get('choices') or [{}])[0].get('message', {})
-        posts, seen = [], set()
+        by_url: dict[str, dict[str, Any]] = {}
+        opened: dict[str, str] = {}
         for tool in message.get('executed_tools') or []:
             for row in (tool.get('search_results') or {}).get('results', []):
                 url = _safe_url(row.get('url'))
                 title = _text(row.get('title'), 180)
-                if not url or not title or url in seen or ' - viewing lines ' in title:
+                if not url or not title:
                     continue
-                seen.add(url)
+                key = url.rstrip('/')
+                content = _text(row.get('content'), 1500)
+                if ' - viewing lines ' in title:
+                    # The tool opened this page: its text is real page content,
+                    # the only text we let the summary rely on.
+                    if content:
+                        opened[key] = content
+                    continue
+                if key in by_url:
+                    continue
                 match = re.search(r'reddit\.com/r/([^/]+)', url)
-                posts.append({'title': title, 'excerpt': _text(row.get('content'), 600), 'url': url,
-                              'subreddit': match.group(1) if match else '', 'date': row.get('published_date'),
-                              'provider': 'Groq web search'})
-        return posts
+                by_url[key] = {'title': title, 'excerpt': content, 'url': url, 'subreddit': match.group(1) if match else '',
+                               'date': row.get('published_date'), 'provider': 'Groq web search'}
+        for key, content in opened.items():
+            if key in by_url:
+                by_url[key]['excerpt'] = content
+                by_url[key]['opened'] = True
+        return list(by_url.values())
     return []
 
 
@@ -276,7 +323,7 @@ def _fallback_report(name: str, posts: list[dict[str, str]]) -> dict[str, Any]:
 
 async def _summarise_with_groq(key: str, name: str, posts: list[dict[str, str]]) -> dict[str, Any] | None:
     evidence = "\n\n".join(
-        f"SOURCE {i + 1}\nTitle: {post['title']}\nDate: {post.get('date')}\nExcerpt: {post['excerpt'] or '[no self-text]'}"
+        f"SOURCE {i + 1}\nTitle: {post['title']}\nDate: {post.get('date')}\nExcerpt: {(post['excerpt'] or '[no self-text]')[:900]}"
         for i, post in enumerate(posts[:10])
     )
     prompt = f'''Сделай нейтральную русскоязычную сводку только по приведённым ниже публичным постам о {name}.
@@ -301,7 +348,7 @@ async def student_voices(institution: dict[str, Any]) -> dict[str, Any]:
     """Retrieve live public posts, then ask Groq for a source-grounded synthesis."""
     started = time.monotonic()
     name = str(institution["name"])
-    cache_key = f"voices:v8:{institution['ror_id']}:{bool(os.getenv('BRAVE_API_KEY'))}:{bool(os.getenv('GROQ_API_KEY'))}:{reddit_configured()}"
+    cache_key = f"voices:v9:{institution['ror_id']}:{bool(os.getenv('TAVILY_API_KEY'))}:{bool(os.getenv('BRAVE_API_KEY'))}:{bool(os.getenv('GROQ_API_KEY'))}:{reddit_configured()}"
     cached = db.get_cached(cache_key)
     if cached: return {**cached, "from_cache":True}
     place = " ".join(str(x) for x in (institution.get("city"), institution.get("country")) if x)
@@ -319,7 +366,7 @@ async def student_voices(institution: dict[str, Any]) -> dict[str, Any]:
         # PullPush only as a fallback: it throttles (HTTP 429) after a few requests.
         archive = [] if reddit_configured() else [_reddit_search(client, query) for query in queries]
         batches = await asyncio.gather(*official, *archive, _forum_search(client, name),
-                                       _groq_web_search(client, name, place, cis),
+                                       *([_tavily_search(client, name, place, cis)] if os.getenv("TAVILY_API_KEY") else [_groq_web_search(client, name, place, cis)]),
                                        return_exceptions=True)
     posts = _relevant([post for batch in batches if isinstance(batch,list) for post in batch], name, institution.get('aliases'), own,
                       (institution.get('official_domain') or '').lower() or None)

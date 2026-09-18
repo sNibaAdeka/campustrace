@@ -518,7 +518,9 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str,
     if name_match or building_match:
         evidence.append({"kind": "name_in_text", "detail": "название здания вуза" if building_match and not name_match else "название вуза"})
     if distance is not None and distance <= GEO_NEAR_METRES and not city_only and reference is institution.get("campus_coordinates"):
-        evidence.append({"kind": "geo_near", "detail": f"{int(round(distance, -1))} м от точки кампуса (Wikidata P625)"})
+        basis = {"institution_point": "Wikidata P625", "headquarters_point": "Wikidata P159",
+                 "buildings_point": "здания вуза в Wikidata"}.get(reference.get("precision"), "Wikidata")
+        evidence.append({"kind": "geo_near", "detail": f"{int(round(distance, -1))} м от точки кампуса ({basis})"})
     return {
         "id": "commons-" + hashlib.sha256(raw_id).hexdigest()[:20],
         "provider": "Wikimedia Commons", "title": title.removeprefix("File:"),

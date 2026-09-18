@@ -183,9 +183,10 @@ async function loadProfile(rorId, refresh = false) {
 // A stable colour per platform, so the same platform reads the same everywhere.
 const PLATFORM_COLORS = { Reddit: '#ff8b60', Quora: '#ff9a8f', YouTube: '#ff7a7a', Facebook: '#8fb3ff', Instagram: '#f59ad0',
   'The Student Room': '#9fd3ff', Niche: '#9ee6b8', Unigo: '#c4b5ff', StudentCrowd: '#ffd27a', 'Официальный сайт вуза': '#cfd3dc',
-  Telegram: '#8fd3ff', VK: '#9fb8ff', X: '#e5e7eb', LinkedIn: '#8fc2ff', 'Википедия': '#e5e7eb' };
+  Telegram: '#8fd3ff', VK: '#9fb8ff', X: '#e5e7eb', LinkedIn: '#8fc2ff', 'Википедия': '#e5e7eb',
+  '2ГИС': '#9be07a', 'Яндекс Карты': '#ffd26a', EduOpinions: '#b9a8ff', Studyportals: '#8fe0d0' };
 const KIND_LABELS = { forum: 'форум', review_site: 'сайт отзывов', video: 'видео', blog: 'блог', social: 'соцсеть',
-  news: 'СМИ', official: 'вуз о себе', reference: 'справка', web: 'веб' };
+  news: 'СМИ', official: 'вуз о себе', reference: 'справка', web: 'веб', map_review: 'отзывы на карте' };
 function platformDot(name) {
   const dot = node('span', (name || '?').replace(/^www\./, '').slice(0, 1).toUpperCase(), 'platform-dot');
   dot.style.setProperty('--p', PLATFORM_COLORS[name] || '#cfd3dc');

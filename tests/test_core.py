@@ -868,3 +868,22 @@ class CityDistanceTests(unittest.TestCase):
     def test_no_point_or_absurd_distance_gives_nothing(self):
         self.assertIsNone(city_center_distance({"city_coordinates": {"lat": 1, "lon": 1}}))
         self.assertIsNone(city_center_distance({"campus_coordinates": {"lat": 0, "lon": 0}, "city_coordinates": {"lat": 10, "lon": 10}}))
+
+
+class TavilyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tavily_results_carry_snippets_and_links_only(self):
+        from app.voices import _tavily_search
+        payload = {"results": [{"title": "KBTU dormitory review", "url": "https://2gis.kz/almaty/x", "content": "Общежитие КБТУ: чисто, но далеко"},
+                               {"title": "bad", "url": "javascript:alert(1)", "content": "x"}]}
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+        with patch.dict(os.environ, {"TAVILY_API_KEY": "t"}):
+            async with httpx.AsyncClient(transport=transport) as client:
+                posts = await _tavily_search(client, "Kazakh-British Technical University", "Almaty", True)
+        self.assertTrue(all(p["url"].startswith("https://") for p in posts))
+        self.assertIn("Общежитие", posts[0]["excerpt"])
+
+    async def test_without_key_nothing_is_called(self):
+        from app.voices import _tavily_search
+        with patch.dict(os.environ, {"TAVILY_API_KEY": ""}):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: (_ for _ in ()).throw(AssertionError("called")))) as client:
+                self.assertEqual(await _tavily_search(client, "X", "Y"), [])
