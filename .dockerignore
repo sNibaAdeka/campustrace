@@ -1,0 +1,12 @@
+.git
+.venv
+.venv_check
+_to_delete*
+__pycache__
+*.pyc
+.env
+data/*.sqlite3*
+data/.fuse_hidden*
+docs
+tests
+.claude

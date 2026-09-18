@@ -28,8 +28,7 @@ services:
       - key: PROFILE_BUDGET_SECONDS
         value: "26"
       - key: DATABASE_PATH
-        value: /data/campustrace.sqlite3
-    disk:
-      name: campustrace-data
-      mountPath: /data
-      sizeGB: 1
+        value: /tmp/campustrace.sqlite3
+    # Free instances cannot mount a persistent disk. The SQLite cache then lives
+    # in /tmp and is rebuilt after a restart; run scripts/prewarm.py after each
+    # deploy. On a paid plan, add a disk at /data and point DATABASE_PATH there.

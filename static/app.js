@@ -296,7 +296,13 @@ function renderGallery() {
     photoLink.href = item.source_url; photoLink.target = '_blank'; photoLink.rel = 'noopener noreferrer';
     photoLink.setAttribute('aria-label', `Открыть первоисточник: ${item.title}`);
     photoLink.append(image);
-    image.addEventListener('error', () => image.replaceWith(node('div', 'Превью недоступно — откройте первоисточник.', 'image-fallback')), { once: true });
+    // Wikimedia's thumbnail edge occasionally throttles a burst of requests:
+    // retry once with the plain URL before showing the text fallback.
+    let retried = false;
+    image.addEventListener('error', () => {
+      if (!retried) { retried = true; window.setTimeout(() => { image.removeAttribute('srcset'); image.src = item.image_url + (item.image_url.includes('?') ? '&' : '?') + 'retry=1'; }, 1200); return; }
+      image.replaceWith(node('div', 'Превью недоступно — откройте первоисточник.', 'image-fallback'));
+    });
     const body = node('div', null, 'card-body');
     const topline = node('div', null, 'card-topline');
     topline.append(node('span', labels[item.category] || item.category, 'card-type'),

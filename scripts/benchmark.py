@@ -16,7 +16,10 @@ Usage
     # 1. start the server in another shell
     uvicorn app.main:app --port 8765
 
-    # 2. run against a cold cache (this is the honest number)
+    # 2. run against a cold cache (this is the honest number). --refresh
+    #    rebuilds the profile; for a truly cold run also start the server with
+    #    an empty DATABASE_PATH, otherwise source responses come from the 24 h
+    #    cache. The table reports cache hits per row either way.
     python3 scripts/benchmark.py --base http://127.0.0.1:8765 --refresh \
         --out docs/benchmark.json --markdown docs/benchmark.md
 
@@ -65,10 +68,13 @@ async def one(client: httpx.AsyncClient, query: str, refresh: bool) -> dict:
     try:
         search = await client.get("/api/search/suggest", params={"q": query}, timeout=30)
         search.raise_for_status()
-        results = search.json().get("results") or []
+        payload = search.json()
+        results = payload.get("results") or []
         row["search_ms"] = int((time.monotonic() - started) * 1000)
         if not results:
-            row["outcome"] = "not_found"
+            # An unreachable registry is not "the university does not exist".
+            row["outcome"] = "source_error" if payload.get("warning") else "not_found"
+            row["detail"] = payload.get("warning")
             return row
         chosen = results[0]
         row["resolved_to"] = chosen.get("name")
@@ -76,7 +82,21 @@ async def one(client: httpx.AsyncClient, query: str, refresh: bool) -> dict:
 
         params = {"refresh": "true"} if refresh else None
         profile_started = time.monotonic()
+
+        async def preview() -> None:
+            # The browser asks for the preview and the full profile at the same
+            # moment; the first photo is on screen when the preview returns.
+            try:
+                reply = await client.get(f"/api/profiles/{chosen['ror_id']}/preview", timeout=30)
+                if reply.status_code == 200 and reply.json().get("assets"):
+                    row["first_photo_ms"] = row["search_ms"] + int((time.monotonic() - profile_started) * 1000)
+                    row["preview_assets"] = len(reply.json()["assets"])
+            except httpx.HTTPError:
+                pass
+
+        preview_task = asyncio.ensure_future(preview())
         response = await client.get(f"/api/profiles/{chosen['ror_id']}", params=params, timeout=60)
+        await preview_task
         response.raise_for_status()
         profile = response.json()
     except httpx.HTTPError as exc:
@@ -87,9 +107,15 @@ async def one(client: httpx.AsyncClient, query: str, refresh: bool) -> dict:
 
     row["total_ms"] = int((time.monotonic() - started) * 1000)
     row["profile_ms"] = int((time.monotonic() - profile_started) * 1000)
-    # Server-side instrumentation: when the first licensed asset existed.
-    first = profile.get("time_to_first_asset_ms")
-    row["first_photo_ms"] = None if first is None else row["search_ms"] + first
+    row.setdefault("first_photo_ms", None)
+    if row["first_photo_ms"] is None and profile.get("assets"):
+        row["first_photo_ms"] = row["total_ms"]  # no preview: photos arrive with the profile
+    events = profile.get("source_events") or []
+    # How much of this build came from the 24 h source cache. A "cold" number
+    # is only cold when this is zero; the report states it per row.
+    row["source_requests"] = len(events)
+    row["source_cache_hits"] = sum(1 for e in events if e.get("outcome") == "cache")
+    row["vision_checked"] = (profile.get("vision") or {}).get("checked", 0)
     row["assets"] = len(profile.get("assets") or [])
     row["coverage_sections"] = sum(1 for v in (profile.get("coverage") or {}).values() if v)
     row["unclassified"] = profile.get("unclassified_count", 0)
@@ -119,6 +145,8 @@ def summarise(rows: list[dict]) -> dict:
         "empty": sum(1 for r in rows if r.get("outcome") == "empty"),
         "not_found": sum(1 for r in rows if r.get("outcome") == "not_found"),
         "errors": sum(1 for r in rows if r.get("outcome") == "error"),
+        "source_errors": sum(1 for r in rows if r.get("outcome") == "source_error"),
+        "fully_cold_builds": sum(1 for r in ok if r.get("source_requests") and not r.get("source_cache_hits")),
         "partial_profiles": sum(1 for r in ok if r.get("status") == "partial"),
         "submit_to_complete_ms": {
             "p50": percentile(totals, 0.5), "p95": percentile(totals, 0.95),
@@ -136,8 +164,8 @@ def summarise(rows: list[dict]) -> dict:
 
 def markdown(rows: list[dict], summary: dict) -> str:
     lines = [
-        "| Запрос | Определён как | Материалов | Разделов | submit→первое фото | submit→полный профиль | Статус |",
-        "|---|---|---:|---:|---:|---:|---|",
+        "| Запрос | Определён как | Материалов | Разделов | submit→первое фото | submit→полный профиль | Из кэша источников | Vision | Статус |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---|",
     ]
     for row in rows:
         first = row.get("first_photo_ms")
@@ -147,6 +175,8 @@ def markdown(rows: list[dict], summary: dict) -> str:
             f"{row.get('coverage_sections', '—')} | "
             f"{'—' if first is None else f'{first / 1000:.1f} с'} | "
             f"{'—' if total is None else f'{total / 1000:.1f} с'} | "
+            f"{row.get('source_cache_hits', '—')}/{row.get('source_requests', '—')} | "
+            f"{row.get('vision_checked', '—')} | "
             f"{row.get('status') or row.get('outcome')} |"
         )
     complete = summary["submit_to_complete_ms"]
@@ -156,7 +186,9 @@ def markdown(rows: list[dict], summary: dict) -> str:
         f"Замер: {summary['measured_at']}. Вузов: {summary['universities_attempted']}, "
         f"с материалами: {summary['universities_with_material']}, "
         f"пустых: {summary['empty']}, не найдено в реестре: {summary['not_found']}, "
-        f"ошибок: {summary['errors']}, неполных профилей: {summary['partial_profiles']}.",
+        f"ошибок: {summary['errors']}, недоступен реестр: {summary['source_errors']}, "
+        f"неполных профилей: {summary['partial_profiles']}. Сборок без единого попадания в кэш источников: "
+        f"{summary['fully_cold_builds']}. Стенд: {summary.get('base')}.",
         "",
         f"submit → первое фото: p50 {first['p50']} мс, p95 {first['p95']} мс.",
         f"submit → полный профиль: p50 {complete['p50']} мс, p95 {complete['p95']} мс, "
@@ -187,6 +219,8 @@ async def main() -> int:
                   f"{row.get('total_ms', '—')} ms  assets={row.get('assets', '—')}", flush=True)
 
     summary = summarise(rows)
+    summary["base"] = args.base
+    summary["refresh"] = args.refresh
     print("\n" + json.dumps(summary, ensure_ascii=False, indent=2))
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
