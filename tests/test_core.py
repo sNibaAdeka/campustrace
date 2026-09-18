@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -14,7 +15,7 @@ from app.integrations import Sources, SourceError
 from app.main import profile as get_profile_endpoint
 from app.atlas import build_atlas, crosscheck_points, isochrone
 from app.discovery import suggest
-from app.voices import _relevant, _groq_web_search
+from app.voices import _relevant, _groq_web_search, student_voices
 import httpx
 
 
@@ -344,6 +345,45 @@ class CommonsPaginationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await sources.close()
         self.assertEqual(len(calls), 1)
+
+
+class SocialSourcePolicyTests(unittest.IsolatedAsyncioTestCase):
+    """Text and a link from a forum are fair use of a source. A photo is not.
+
+    Instagram and Threads have no public API and no open licence for reuse, and
+    the case forbids presenting someone else's photograph as a picture of a
+    specific campus. This test makes that product decision enforceable rather
+    than a promise in the README.
+    """
+
+    async def test_student_voices_never_returns_an_embeddable_image(self):
+        posts = [{"title": "Dorm life at Nazarbayev University", "selftext": "housing is fine",
+                  "subreddit": "nuredd", "permalink": "/r/nuredd/comments/abc",
+                  "created_utc": 1700000000,
+                  # A source that tries to hand us an image must be ignored.
+                  "thumbnail": "https://preview.redd.it/a.jpg",
+                  "url_overridden_by_dest": "https://i.redd.it/a.jpg"}]
+
+        async def fake_reddit(client, query):
+            return [{"title": posts[0]["title"], "excerpt": "student housing and campus",
+                     "subreddit": "nuredd", "url": "https://www.reddit.com/r/nuredd/comments/abc",
+                     "date": "2023-11-14", "provider": "Reddit / PullPush"}]
+
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.dict(os.environ, {"DATABASE_PATH": folder + "/v.sqlite3",
+                                     "GROQ_API_KEY": "", "BRAVE_API_KEY": ""}), \
+             patch("app.voices._reddit_search", new=fake_reddit):
+            db.initialize()
+            result = await student_voices({"ror_id": "052bx8q98", "name": "Nazarbayev University",
+                                           "city": "Astana", "country": "Kazakhstan", "aliases": []})
+
+        serialised = json.dumps(result, ensure_ascii=False)
+        for forbidden in (".jpg", ".jpeg", ".png", ".webp", "i.redd.it", "preview.redd.it",
+                          "cdninstagram", "instagram.com", "threads.net"):
+            self.assertNotIn(forbidden, serialised, f"leaked media reference: {forbidden}")
+        for item in result["sources"]:
+            self.assertEqual(set(item) & {"image", "image_url", "thumbnail", "media"}, set())
+        self.assertIn("не встраиваются", result["media_policy"])
 
 
 class GeocodeCrossCheckTests(unittest.TestCase):

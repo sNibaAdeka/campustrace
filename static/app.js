@@ -389,7 +389,13 @@ async function loadExtras(rorId) {
 
 function renderExtras() {
   const holder = $('extras'), extras = state.extras, inst = state.profile.institution;
-  if(extras.campus_candidate?.status !== 'institution_point') window.CampusAtlas?.setUnverified(extras.campus_candidate);
+  // Only a point that is genuinely unconfirmed gets the "unverified" marker.
+  // A Wikidata institution point, or one two independent geocoders agree on,
+  // is the best we have and must not be drawn as a guess.
+  const candidate = extras.campus_candidate;
+  if (candidate && candidate.status === 'unverified_map_candidate' && candidate.provider !== 'Wikidata') {
+    window.CampusAtlas?.setUnverified(candidate);
+  }
   holder.replaceChildren();
   const map = node('article'); map.append(node('h4', 'Карта и перекрёстная проверка координат'));
   if (extras.campus_candidate?.lat && extras.campus_candidate?.lon) {

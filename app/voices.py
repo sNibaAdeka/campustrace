@@ -81,10 +81,25 @@ def _relevant(posts: list[dict[str, str]], name: str, aliases: list[str] | None 
     return sorted(unique.values(), key=lambda item: (int(item["score"]), item.get("date") or ""), reverse=True)[:12]
 
 
+TEXT_ONLY_NOTE = (
+    "Публичные обсуждения используются только как текстовое свидетельство: заголовок, "
+    "короткая цитата и ссылка на первоисточник. Фотографии из Instagram, Threads и других "
+    "соцсетей не встраиваются — у них нет открытой лицензии на переиздание, а показ чужого "
+    "снимка как «фото кампуса» запрещён правилами кейса."
+)
+# Communities where prospective students actually discuss housing and campus
+# life. Reddit and forum posts are indexable and quotable; social networks
+# without a public API and without an open licence are deliberately absent.
+FORUM_SITES = (
+    "site:reddit.com OR site:thestudentroom.co.uk OR site:quora.com OR "
+    "site:studentroom.co.uk OR site:collegeconfidential.com OR forum"
+)
+
+
 async def _forum_search(client: httpx.AsyncClient, name: str) -> list[dict[str, Any]]:
     key = os.getenv("BRAVE_API_KEY")
     if not key: return []
-    response = await client.get("https://api.search.brave.com/res/v1/web/search", params={"q":f'"{name}" (housing OR dorms OR student life) (site:reddit.com OR site:thestudentroom.co.uk OR forum)', "count":15}, headers={"X-Subscription-Token":key}, timeout=10)
+    response = await client.get("https://api.search.brave.com/res/v1/web/search", params={"q":f'"{name}" (housing OR dorms OR student life OR campus) ({FORUM_SITES})', "count":15}, headers={"X-Subscription-Token":key}, timeout=10)
     response.raise_for_status()
     return [{"title":_text(row.get("title"),180), "excerpt":_text(row.get("description")), "url":row["url"], "subreddit":"", "date":row.get("page_age"), "provider":urlparse(row["url"]).hostname}
             for row in response.json().get("web",{}).get("results",[]) if _safe_url(row.get("url"))]
@@ -189,6 +204,6 @@ async def student_voices(institution: dict[str, Any]) -> dict[str, Any]:
                 ids = [v for v in item.get('source_ids',[]) if isinstance(v,int) and 1 <= v <= min(8,len(sources))]
                 if report and not ids: continue
                 themes.append({"title": item["title"][:80], "finding": item["finding"][:420], "confidence": str(item.get("confidence", "низкая"))[:20], "source_ids":ids})
-    result = {"available": True, "summary": str(result_report.get("summary", ""))[:1100], "themes": themes, "caveat": str(result_report.get("caveat", ""))[:500], "sources": sources, "ai_available": report is not None, "elapsed_ms": int((time.monotonic() - started) * 1000)}
+    result = {"available": True, "summary": str(result_report.get("summary", ""))[:1100], "themes": themes, "caveat": str(result_report.get("caveat", ""))[:500], "sources": sources, "ai_available": report is not None, "media_policy": TEXT_ONLY_NOTE, "elapsed_ms": int((time.monotonic() - started) * 1000)}
     db.set_cached(cache_key,result,3600)
     return result
