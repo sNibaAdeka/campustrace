@@ -198,17 +198,15 @@ class AtlasAndSearchTests(unittest.IsolatedAsyncioTestCase):
                 posts=await _groq_web_search(client,'Stanford University','USA')
         self.assertEqual(len(posts),1)
         self.assertEqual(posts[0]['title'],'Actual source')
-    async def test_groq_search_falls_back_to_second_model_on_rate_limit(self):
+    async def test_groq_search_rate_limit_does_not_spill_onto_the_summary_model(self):
         seen = []
-        ok = {'choices':[{'message':{'executed_tools':[{'search_results':{'results':[{'title':'Tartu dorm life','url':'https://isablog.ut.ee/x'}]}}]}}]}
         def handler(request):
-            model = json.loads(request.content)['model']; seen.append(model)
-            return httpx.Response(429 if model.endswith('120b') else 200, json={} if model.endswith('120b') else ok)
+            seen.append(json.loads(request.content)['model']); return httpx.Response(429, json={})
         with patch.dict(os.environ,{'GROQ_API_KEY':'test'}):
             async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
                 posts=await _groq_web_search(client,'University of Tartu','Estonia')
-        self.assertEqual(seen, ['openai/gpt-oss-120b', 'openai/gpt-oss-20b'])
-        self.assertEqual(posts[0]['url'], 'https://isablog.ut.ee/x')
+        self.assertEqual(posts, [])
+        self.assertEqual(seen, ['openai/gpt-oss-120b'])
 
     async def test_cyrillic_acronym_finds_exact_institution(self):
         result = await suggest("НУ")

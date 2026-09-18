@@ -35,12 +35,12 @@ function status(message, tone = 'info') {
   $('status').dataset.tone = tone;
 }
 const loaderPhrases = [
-  'Locating the university…',
-  'Reading the campus footprint…',
-  'Finding licensed visual material…',
-  'Tracing sources and permissions…',
-  'Connecting the evidence map…',
-  'Preparing a field guide…',
+  'Ищем университет в реестрах…',
+  'Находим здания кампуса…',
+  'Собираем фото с открытой лицензией…',
+  'Проверяем источники и права…',
+  'Убираем дубликаты…',
+  'Раскладываем по разделам…',
 ];
 function showExplorer() {
   $('landing').hidden = true;
@@ -72,7 +72,7 @@ function beginResearch(item) {
   $('home-search-results').replaceChildren();
   showExplorer();
   $('research-loader').hidden = false;
-  $('loader-title').textContent = `Building ${item.name}'s field guide.`;
+  $('loader-title').textContent = `Собираем профиль: ${item.name}`;
   let position = 0;
   const phrase = $('loader-phrase'); phrase.textContent = loaderPhrases[position];
   window.clearInterval(loaderTimer);
@@ -120,7 +120,7 @@ function institutionLabel(item) { return [item.name, item.city, item.country].fi
 async function search(query, resultId, onChoose, quiet = false, page = 1, submit = false) {
   clearTimeout(searchTimers[resultId]);
   const holder = $(resultId);
-  if (page === 1) holder.replaceChildren(node('p', 'Searching universities…', 'search-message'));
+  if (page === 1) holder.replaceChildren(node('p', 'Ищем университеты…', 'search-message'));
   holder.querySelector('.search-more')?.remove();
   const sequence = ++searchSequence[resultId];
   if (query.trim().length < 2) return;
@@ -142,11 +142,11 @@ async function search(query, resultId, onChoose, quiet = false, page = 1, submit
       holder.append(button);
     }
     if (data.has_more) {
-      const more = node('button', 'Show more universities', 'search-more'); more.type = 'button';
+      const more = node('button', 'Показать ещё', 'search-more'); more.type = 'button';
       more.addEventListener('click', () => search(query, resultId, onChoose, true, page + 1)); holder.append(more);
     }
     if (!quiet) status(data.ambiguous ? 'Проверьте город и выберите нужную организацию.' : 'Выберите организацию.');
-  } catch (error) { if (sequence === searchSequence[resultId]) { holder.replaceChildren(node('p', `Search unavailable: ${error.message}. Please retry.`, 'search-message')); status(`Ошибка поиска: ${error.message}`, 'error'); } }
+  } catch (error) { if (sequence === searchSequence[resultId]) { holder.replaceChildren(node('p', `Поиск недоступен: ${error.message}. Повторите.`, 'search-message')); status(`Ошибка поиска: ${error.message}`, 'error'); } }
 }
 
 async function loadProfile(rorId, refresh = false) {
@@ -175,42 +175,92 @@ async function loadProfile(rorId, refresh = false) {
   } catch (error) {
     if (sequence !== profileSequence) return;
     status(`Не удалось собрать профиль: ${error.message}`, 'error');
-    if (state.researching) { stopResearch(true); $('home-search-results').replaceChildren(node('p', `Could not load this university: ${error.message}. Please retry.`, 'search-message')); }
+    if (state.researching) { stopResearch(true); $('home-search-results').replaceChildren(node('p', `Не удалось загрузить университет: ${error.message}. Повторите.`, 'search-message')); }
   }
   finally { if (sequence === profileSequence) $('profile').removeAttribute('aria-busy'); }
+}
+
+// A stable colour per platform, so the same platform reads the same everywhere.
+const PLATFORM_COLORS = { Reddit: '#ff8b60', Quora: '#ff9a8f', YouTube: '#ff7a7a', Facebook: '#8fb3ff', Instagram: '#f59ad0',
+  'The Student Room': '#9fd3ff', Niche: '#9ee6b8', Unigo: '#c4b5ff', StudentCrowd: '#ffd27a', 'Официальный сайт вуза': '#cfd3dc',
+  Telegram: '#8fd3ff', VK: '#9fb8ff', X: '#e5e7eb', LinkedIn: '#8fc2ff', 'Википедия': '#e5e7eb' };
+const KIND_LABELS = { forum: 'форум', review_site: 'сайт отзывов', video: 'видео', blog: 'блог', social: 'соцсеть',
+  news: 'СМИ', official: 'вуз о себе', reference: 'справка', web: 'веб' };
+function platformDot(name) {
+  const dot = node('span', (name || '?').replace(/^www\./, '').slice(0, 1).toUpperCase(), 'platform-dot');
+  dot.style.setProperty('--p', PLATFORM_COLORS[name] || '#cfd3dc');
+  dot.setAttribute('aria-hidden', 'true');
+  return dot;
+}
+function sourceRefs(ids, sources) {
+  const sup = node('sup');
+  for (const id of ids || []) { const s = sources.find(x => x.id === id); if (s) { const a = link(`[${id}]`, s.url); a.title = s.title; sup.append(a); } }
+  return sup;
+}
+
+function renderVoices(holder, data) {
+  holder.replaceChildren();
+  if (!data.available) { holder.append(node('p', data.reason, 'hint')); return; }
+  holder.append(node('p', data.summary, 'voices-summary'));
+  const sources = data.sources || [];
+  if (data.platforms?.length) {
+    const list = node('ul', null, 'voices-platforms'); list.setAttribute('aria-label', 'Где найдены обсуждения');
+    for (const name of data.platforms) {
+      const count = sources.filter(s => s.platform === name).length;
+      const li = node('li'); li.append(platformDot(name), node('span', `${name} · ${count}`)); list.append(li);
+    }
+    holder.append(list);
+  }
+  if (data.pros?.length || data.cons?.length) {
+    const grid = node('div', null, 'pros-cons');
+    for (const [key, title, icon, items] of [['pros', 'Что хвалят', 'plus', data.pros], ['cons', 'На что жалуются', 'minus', data.cons]]) {
+      const box = node('div', null, key); box.append(iconNode('h4', icon, title));
+      const ul = node('ul');
+      if (!items?.length) ul.append(node('li', 'В найденных источниках прямо не сказано.', 'hint'));
+      for (const item of items || []) { const li = node('li', item.text); li.append(sourceRefs(item.source_ids, sources)); ul.append(li); }
+      box.append(ul); grid.append(box);
+    }
+    holder.append(grid);
+  }
+  if (data.themes?.length && data.ai_available) {
+    const themes = node('div', null, 'voice-themes');
+    for (const item of data.themes) {
+      const article = node('article');
+      const p = node('p', item.finding); p.append(sourceRefs(item.source_ids, sources));
+      article.append(node('h4', item.title), p);
+      themes.append(article);
+    }
+    holder.append(themes);
+  }
+  if (sources.length) {
+    const cards = node('div', null, 'voice-cards');
+    for (const source of sources) {
+      const card = node('a', null, `voice-card${source.kind === 'official' ? ' official' : ''}`);
+      card.href = source.url; card.target = '_blank'; card.rel = 'noopener noreferrer';
+      const head = node('header');
+      head.append(platformDot(source.platform), node('strong', source.platform || source.provider));
+      if (source.community) head.append(node('span', `r/${source.community}`));
+      if (source.date) head.append(node('span', String(source.date).slice(0, 10)));
+      head.append(node('span', KIND_LABELS[source.kind] || 'веб', 'voice-kind'));
+      card.append(node('span', `[${source.id}]`, 'source-num'), head, node('h5', source.title));
+      if (source.excerpt && source.excerpt.trim() !== '…') card.append(node('p', source.excerpt));
+      cards.append(card);
+    }
+    holder.append(cards);
+  }
+  holder.append(node('p', [data.caveat, data.media_policy].filter(Boolean).join(' '), 'hint'));
 }
 
 async function loadVoices() {
   const profile = state.profile;
   if (!profile) return;
   const holder = $('student-voices');
-  holder.replaceChildren(node('p', 'Ищу публичные обсуждения и сверяю ссылки. Это может занять до 25 секунд.', 'hint'));
+  holder.replaceChildren(node('p', 'ИИ просматривает форумы, сайты отзывов, студенческие СМИ и карты. Это займёт до 40 секунд — галерея уже доступна.', 'hint'));
   $('voices-refresh').disabled = true;
   try {
     const data = await api(`/api/profiles/${profile.institution.ror_id}/student-voices`);
     if (state.profile?.institution.ror_id !== profile.institution.ror_id) return;
-    holder.replaceChildren();
-    if (!data.available) { holder.append(node('p', data.reason, 'hint')); return; }
-    holder.append(node('p', data.summary, 'voices-summary'));
-    const themes = node('div', null, 'voice-themes');
-    for (const item of data.themes || []) {
-      const article = node('article');
-      article.append(node('h4', item.title), node('p', item.finding), node('p', `Уверенность: ${item.confidence || 'низкая'}`, 'hint'));
-      for (const id of item.source_ids || []) { const source = data.sources.find(s => s.id === id); if(source) article.append(link(`Источник ${id}`,source.url)); }
-      themes.append(article);
-    }
-    if (data.themes?.length) holder.append(themes);
-    if (data.sources?.length) {
-      const sourceBox = node('div', null, 'voice-sources'); sourceBox.append(node('h4', 'Ссылки, найденные исследованием'));
-      for (const source of data.sources) {
-        const article = node('article', null, 'discussion-card');
-        article.append(node('p', [source.provider, source.community ? `r/${source.community}` : '', source.date?.slice(0,10)].filter(Boolean).join(' · '), 'hint'), link(source.title, source.url));
-        if (source.excerpt) article.append(node('blockquote', source.excerpt));
-        sourceBox.append(article);
-      }
-      holder.append(sourceBox);
-    }
-    holder.append(node('p', data.caveat, 'hint'));
+    renderVoices(holder, data);
     status(`Исследование отзывов готово за ${Math.max(1, Math.round(data.elapsed_ms / 1000))} с.`, 'success');
   } catch (error) { if (state.profile?.institution.ror_id === profile.institution.ror_id) holder.replaceChildren(node('p', `Отзывы недоступны: ${error.message}`, 'hint')); }
   finally { if (state.profile?.institution.ror_id === profile.institution.ror_id) $('voices-refresh').disabled = false; }
@@ -228,8 +278,14 @@ function renderProfile() {
   if (typeof p.elapsed_ms === 'number') parts.push(`собрано за ${(p.elapsed_ms / 1000).toFixed(1)} с`);
   parts.push(`обновлено: ${new Date(p.generated_at * 1000).toLocaleString('ru-RU')}`);
   $('profile-meta').textContent = parts.join(' · ');
-  $('warnings').replaceChildren(...(p.warnings || []).map(w => node('p', w)));
-  renderProfileStatus(); renderFacts();
+  // Technical notes (hashing, quotas, skipped sources) are kept visible for
+  // the jury but folded: the student sees one line, not a wall of warnings.
+  const notes = p.warnings || [];
+  const log = node('details', null, 'tech-log glass');
+  log.append(node('summary', `Журнал проверки: ${notes.length} ${notes.length === 1 ? 'запись' : notes.length < 5 ? 'записи' : 'записей'} — что проверено, что пропущено и почему`));
+  const body = node('div', null, 'tech-body'); for (const w of notes) body.append(node('p', w)); log.append(body);
+  $('warnings').replaceChildren(...(notes.length ? [log] : []));
+  renderProfileStatus(); renderFacts(); renderHero();
   renderFilters(); renderGallery(); renderCoverage(); renderFunnel();
 }
 
@@ -284,55 +340,71 @@ function renderFilters() {
   }
 }
 
+const relText = { high: 'высокая', medium: 'средняя', low: 'низкая' };
+const ICON = {
+  external: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg>',
+  shield: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v6c0 4.4 3 7.6 7 9 4-1.4 7-4.6 7-9V6z"/><path d="m9 12 2 2 4-4"/></svg>',
+  pin: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-6.3 7-12a7 7 0 0 0-14 0c0 5.7 7 12 7 12z"/><circle cx="12" cy="9" r="2.5"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+  minus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>',
+  share: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8.2 10.8 7.6-4.4M8.2 13.2l7.6 4.4"/></svg>',
+};
+function iconNode(tag, name, text, cls) {
+  const item = node(tag, null, cls);
+  item.insertAdjacentHTML('afterbegin', ICON[name]); // static, trusted markup only
+  if (text) item.append(node('span', text));
+  return item;
+}
+function selectedAssets() {
+  return state.profile.assets.filter(a => state.filter === 'all' || a.category === state.filter || (a.tags || []).includes(state.filter));
+}
+function thumbOf(item, size = 330) {
+  return String(item.image_url).includes('/960px-') ? item.image_url.replace('/960px-', `/${size}px-`) : item.image_url;
+}
+
 function renderGallery() {
   const holder = $('gallery'); holder.replaceChildren();
-  const selected = state.profile.assets.filter(a => state.filter === 'all' || a.category === state.filter || (a.tags || []).includes(state.filter));
+  const selected = selectedAssets();
   $('gallery-count').textContent = `${selected.length} ${selected.length % 10 === 1 && selected.length % 100 !== 11 ? 'материал' : [2, 3, 4].includes(selected.length % 10) && ![12, 13, 14].includes(selected.length % 100) ? 'материала' : 'материалов'}`;
   if (!selected.length) { holder.append(node('p', 'Для этого раздела пока нет материалов с указанными источниками и лицензиями.', 'gallery-empty')); return; }
-  for (const item of selected) {
+  selected.forEach((item, index) => {
     const card = node('article', null, 'card');
+    card.style.setProperty('--i', String(Math.min(index, 14)));
     const image = node('img'); image.src = item.image_url; image.alt = item.title; image.loading = 'lazy'; image.decoding = 'async';
     if (String(item.image_url).includes('/960px-')) {
-      image.srcset = `${item.image_url.replace('/960px-', '/330px-')} 330w, ${item.image_url} 960w`;
+      image.srcset = `${thumbOf(item)} 330w, ${item.image_url} 960w`;
       image.sizes = '(max-width: 640px) 100vw, 330px';
     }
-    // Every photograph is a link to its primary source (case requirement).
-    const photoLink = node('a', null, 'card-photo');
-    photoLink.href = item.source_url; photoLink.target = '_blank'; photoLink.rel = 'noopener noreferrer';
-    photoLink.setAttribute('aria-label', `Открыть первоисточник: ${item.title}`);
-    photoLink.append(image);
-    // Wikimedia's thumbnail edge occasionally throttles a burst of requests:
-    // retry once with the plain URL before showing the text fallback.
+    // The photo opens the viewer, whose main action is the primary source; the
+    // "Источник" button under the photo links the source directly.
+    const photo = node('button', null, 'card-photo'); photo.type = 'button';
+    photo.setAttribute('aria-label', `Открыть фото и первоисточник: ${item.title}`);
+    photo.addEventListener('click', () => openViewer(index));
+    photo.append(image);
     let retried = false;
     image.addEventListener('error', () => {
       if (!retried) { retried = true; window.setTimeout(() => { image.removeAttribute('srcset'); image.src = item.image_url + (item.image_url.includes('?') ? '&' : '?') + 'retry=1'; }, 1200); return; }
       image.replaceWith(node('div', 'Превью недоступно — откройте первоисточник.', 'image-fallback'));
     });
+    const badges = node('div', null, 'card-badges');
+    const level = item.reliability?.level || 'low';
+    badges.append(node('span', labels[item.category] || item.category, 'card-badge'),
+                  node('span', `Достоверность: ${relText[level]}`, `card-badge rel-${level}`));
+    photo.append(badges);
+
     const body = node('div', null, 'card-body');
-    const topline = node('div', null, 'card-topline');
-    topline.append(node('span', labels[item.category] || item.category, 'card-type'),
-                   node('span', statusLabels[item.status] || item.status, `pill ${item.status}`));
-    body.append(topline, node('h4', item.title), node('p', item.provider, 'card-meta'));
-    // P1.7: the credit line belongs next to the image, not only inside a dialog.
-    // Several Commons licences require attribution wherever the file is shown.
+    body.append(node('h4', item.title));
     const credit = node('p', null, 'card-credit');
-    credit.append(node('span', item.author || 'Автор не указан'), node('span', ' · '));
-    credit.append(item.license_url ? link(item.license || 'Лицензия', item.license_url)
-                                   : node('span', item.license || 'Лицензия не указана'));
-    credit.append(node('span', ' · '), link('источник', item.source_url));
+    credit.append(node('span', `${item.author || 'Автор не указан'} · `));
+    credit.append(item.license_url ? link(item.license || 'Лицензия', item.license_url) : node('span', item.license || 'Лицензия не указана'));
+    credit.append(node('span', ` · ${item.provider}`));
     body.append(credit);
     const evidence = (item.evidence || []).filter(e => e.supports !== false);
     if (evidence.length) {
-      // A count of independent facts, not a probability.
       const chips = node('ul', null, 'evidence-chips');
       chips.setAttribute('aria-label', `Подтверждений: ${evidence.length}`);
-      const levelText = { high: 'высокая', medium: 'средняя', low: 'низкая' }[item.reliability?.level] || 'низкая';
-      const level = node('li', `Достоверность: ${levelText} · подтверждений ${evidence.length}`, `evidence-count reliability-${item.reliability?.level || 'low'}`);
-      level.title = 'Уровень = число независимых видов подтверждений; понижается при расхождении проверок, неопределённой категории и городском контексте';
-      chips.append(level);
       for (const e of evidence) {
-        const chip = node('li', null, 'evidence-chip');
-        chip.title = e.detail || '';
+        const chip = node('li', null, 'evidence-chip'); chip.title = e.detail || '';
         chip.append(e.url ? link(evidenceLabels[e.kind] || e.kind, e.url) : node('span', evidenceLabels[e.kind] || e.kind));
         chips.append(chip);
       }
@@ -340,17 +412,104 @@ function renderGallery() {
     }
     if (item.vision?.available) {
       const agreement = String(item.vision.agreement || '');
-      const tone = agreement.startsWith('confirmed') ? 'confirmed'
-        : agreement.startsWith('conflict') ? 'conflict' : 'partial';
-      const text = tone === 'confirmed' ? `Изображение проверено: ${item.vision.scene_label}`
-        : tone === 'conflict' ? `Расхождение с текстом: видно «${item.vision.scene_label}»`
-        : `Категория только по изображению: ${item.vision.scene_label}`;
-      body.append(node('p', text, `vision-badge ${tone}`));
+      const tone = agreement.startsWith('confirmed') ? 'confirmed' : agreement.startsWith('conflict') ? 'conflict' : 'partial';
+      body.append(node('p', tone === 'confirmed' ? `Изображение проверено ИИ: ${item.vision.scene_label}`
+        : tone === 'conflict' ? `ИИ видит другое: «${item.vision.scene_label}»` : `Категория по изображению: ${item.vision.scene_label}`, `vision-badge ${tone}`));
     }
-    const button = node('button', 'Проверить источник'); button.type = 'button';
-    button.addEventListener('click', () => showEvidence(item.id));
-    if(item.coordinates){const mapButton=node('button','Место съёмки ↗','photo-map-button');mapButton.type='button';mapButton.addEventListener('click',()=>window.CampusAtlas?.showPhoto(item.id));body.append(mapButton);}
-    body.append(button); card.append(photoLink, body); holder.append(card);
+    const actions = node('div', null, 'card-actions');
+    const source = iconNode('a', 'external', 'Источник');
+    source.href = item.source_url; source.target = '_blank'; source.rel = 'noopener noreferrer';
+    const passport = iconNode('button', 'shield', 'Паспорт'); passport.type = 'button';
+    passport.addEventListener('click', () => showEvidence(item.id));
+    actions.append(source, passport);
+    if (item.coordinates) {
+      const where = iconNode('button', 'pin', 'На карте'); where.type = 'button';
+      where.addEventListener('click', () => window.CampusAtlas?.showPhoto(item.id));
+      actions.append(where);
+    }
+    body.append(actions);
+    card.append(photo, body); holder.append(card);
+  });
+}
+
+// Photo viewer: the large image, author, licence, evidence and the primary
+// source as the main action. Arrow keys navigate, Esc closes, focus returns.
+let viewerIndex = 0, viewerReturnFocus = null;
+function openViewer(index) {
+  viewerReturnFocus = document.activeElement;
+  viewerIndex = index; renderViewer();
+  $('photo-viewer').hidden = false;
+  document.body.style.overflow = 'hidden';
+  $('viewer-close').focus();
+}
+function closeViewer() {
+  $('photo-viewer').hidden = true; document.body.style.overflow = '';
+  viewerReturnFocus?.focus?.();
+}
+function stepViewer(delta) {
+  const list = selectedAssets(); if (!list.length) return;
+  viewerIndex = (viewerIndex + delta + list.length) % list.length; renderViewer();
+}
+function renderViewer() {
+  const list = selectedAssets(); const item = list[viewerIndex]; if (!item) return;
+  const img = $('viewer-img'); img.src = item.image_url; img.alt = item.title;
+  $('viewer-counter').textContent = `${viewerIndex + 1} / ${list.length}`;
+  const info = $('viewer-info'); info.replaceChildren();
+  const level = item.reliability?.level || 'low';
+  info.append(node('p', `${labels[item.category] || item.category} · достоверность ${relText[level]}`, 'eyebrow'), node('h3', item.title));
+  const source = iconNode('a', 'external', 'Открыть первоисточник', 'viewer-source');
+  source.href = item.source_url; source.target = '_blank'; source.rel = 'noopener noreferrer';
+  info.append(source);
+  const dl = node('dl');
+  const date = item.captured_at || item.published_at;
+  for (const [k, v] of [['Автор', item.author], ['Лицензия', item.license], ['Источник', item.provider], ['Дата', date ? String(date).slice(0, 10) : 'не указана']]) dl.append(node('dt', k), node('dd', v || '—'));
+  info.append(dl);
+  const evidence = item.evidence || [];
+  if (evidence.length) {
+    info.append(node('h4', 'Почему этот кадр здесь'));
+    const ul = node('ul', null, 'viewer-evidence');
+    for (const e of evidence) ul.append(node('li', `${e.supports === false ? 'Против: ' : ''}${evidenceLabels[e.kind] || e.kind}${e.detail ? ' — ' + e.detail : ''}`));
+    info.append(ul);
+  }
+  if (item.license_url) info.append(link('Условия лицензии', item.license_url));
+  // Preload the neighbours so arrow navigation feels instant.
+  for (const d of [1, -1]) { const next = list[(viewerIndex + d + list.length) % list.length]; if (next) { const pre = new Image(); pre.src = next.image_url; } }
+}
+document.addEventListener('keydown', (event) => {
+  if ($('photo-viewer')?.hidden !== false) return;
+  if (event.key === 'Escape') closeViewer();
+  else if (event.key === 'ArrowRight') stepViewer(1);
+  else if (event.key === 'ArrowLeft') stepViewer(-1);
+});
+
+// Hero: the best-evidenced photograph behind the name, and the numbers a
+// student asks first. Every number is a count from this profile, not a score.
+function renderHero() {
+  const p = state.profile, inst = p.institution;
+  const best = [...p.assets].filter(a => a.category !== 'city').sort((a, b) => (b.evidence_level || 0) - (a.evidence_level || 0))[0];
+  document.querySelector('.profile-overview')?.style.setProperty('--hero-image', best ? `url("${thumbOf(best, 960).replace(/"/g, '%22')}")` : 'none');
+  let stats = $('hero-stats');
+  if (!stats) { stats = node('ul', null, 'hero-stats'); stats.id = 'hero-stats'; document.querySelector('.profile-identity')?.append(stats); }
+  stats.replaceChildren();
+  const high = p.assets.filter(a => a.reliability?.level === 'high').length;
+  const sections = Object.values(p.coverage || {}).filter(Boolean).length;
+  const items = [[p.assets.length, 'кадров с лицензией'], [sections, 'разделов из 8'], [high, 'с высокой достоверностью']];
+  if (inst.city_center_distance) items.push([`${inst.city_center_distance.km} км`, 'до центра города по прямой']);
+  if (typeof p.elapsed_ms === 'number' && !p.from_cache) items.push([`${(p.elapsed_ms / 1000).toFixed(1)} с`, 'время сборки']);
+  for (const [value, label] of items) { const li = node('li'); li.append(node('strong', value), node('span', label)); stats.append(li); }
+  let actions = $('hero-actions');
+  if (!actions) {
+    actions = node('div', null, 'hero-actions'); actions.id = 'hero-actions';
+    document.querySelector('.profile-identity')?.append(actions);
+    const share = iconNode('button', 'share', 'Поделиться профилем', 'glass-button'); share.type = 'button';
+    share.addEventListener('click', async () => {
+      const url = `${location.origin}/#${state.profile.institution.ror_id}`;
+      try { if (navigator.share) await navigator.share({ title: `CampusTrace: ${state.profile.institution.name}`, url }); else { await navigator.clipboard.writeText(url); status('Ссылка на профиль скопирована.', 'success'); } }
+      catch (_) { status(url, 'info'); }
+    });
+    const voices = node('button', 'Что говорят студенты', 'glass-button'); voices.type = 'button';
+    voices.addEventListener('click', () => document.querySelector('.voices-section')?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }));
+    actions.append(share, voices);
   }
 }
 
@@ -598,3 +757,9 @@ $('voices-refresh').addEventListener('click', loadVoices);
 $('loader-cancel').addEventListener('click', () => { ++profileSequence; stopResearch(true); history.replaceState(null, '', location.pathname); $('home-search-input').focus(); });
 api('/api/integrations').then(data => { $('integration-status').textContent = `Обязательные: ${data.required.join(', ')}. Дополнительно настроено: ${Object.entries(data.optional_configured).filter(([, yes]) => yes).map(([name]) => name).join(', ') || 'ничего'}.`; }).catch(() => {});
 if (/^#[0-9a-z]{9}$/.test(location.hash)) { showExplorer(); loadProfile(location.hash.slice(1)); }
+
+// Viewer wiring (elements exist in index.html).
+$('viewer-close')?.addEventListener('click', closeViewer);
+$('viewer-prev')?.addEventListener('click', () => stepViewer(-1));
+$('viewer-next')?.addEventListener('click', () => stepViewer(1));
+$('photo-viewer')?.addEventListener('click', (event) => { if (event.target.id === 'photo-viewer') closeViewer(); });

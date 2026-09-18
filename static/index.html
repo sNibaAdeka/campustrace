@@ -16,38 +16,39 @@
   <link rel="preconnect" href="https://upload.wikimedia.org">
   <link id="app-style" rel="stylesheet" href="/static/style.css?v=51">
   <link rel="stylesheet" href="/static/box-loader.css?v=3">
+  <link rel="stylesheet" href="/static/glass.css?v=3">
 </head>
 <body>
   <main class="page-shell">
     <section id="landing" class="landing" aria-labelledby="landing-title">
       <header class="landing-header">
         <a class="brand" href="/" aria-label="CampusTrace, home">Campus<span>Trace</span></a>
-        <p>VISUAL UNIVERSITY ATLAS</p>
+        <p>ВИЗУАЛЬНЫЙ АТЛАС УНИВЕРСИТЕТОВ</p>
       </header>
-      <canvas id="discovery-globe" class="discovery-globe" aria-label="Interactive globe. Drag to rotate."></canvas>
+      <canvas id="discovery-globe" class="discovery-globe" aria-label="Интерактивный глобус. Перетащите, чтобы повернуть."></canvas>
       <div class="globe-fallback" aria-hidden="true"></div>
       <div class="landing-orbit landing-orbit-one" aria-hidden="true"></div>
       <div class="landing-orbit landing-orbit-two" aria-hidden="true"></div>
       <div class="landing-copy">
         <p class="landing-kicker">CAMPUS TRACE</p>
-        <h1 id="landing-title">Where will<br>you study?</h1>
-        <p class="landing-lead">Search a university to begin.</p>
+        <h1 id="landing-title">Где ты<br>будешь учиться?</h1>
+        <p class="landing-lead">Найдите университет — покажем кампус, общежития и отзывы с источниками.</p>
         <form id="home-search-form" class="home-search-form">
-          <label class="visually-hidden" for="home-search-input">University name</label>
+          <label class="visually-hidden" for="home-search-input">Название университета</label>
           <div class="home-ai-input">
-            <textarea id="home-search-input" minlength="2" maxlength="120" required rows="1" placeholder="Search a university" aria-label="University name"></textarea>
+            <textarea id="home-search-input" minlength="2" maxlength="120" required rows="1" placeholder="Например: Satbayev, MIT, КазНУ, Kyoto University" aria-label="Название университета"></textarea>
             <span class="home-mic" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"></circle><path d="m16 16 4 4"></path></svg></span>
-            <button class="home-send" type="submit" aria-label="Explore university"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg></button>
+            <button class="home-send" type="submit" aria-label="Открыть университет"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg></button>
           </div>
         </form>
         <div id="home-search-results" class="home-search-results" aria-live="polite"></div>
-        <p class="landing-footnote">Type a university name, abbreviation, or city.</p>
+        <p class="landing-footnote">Название, аббревиатура или город — на любом языке.</p>
       </div>
-      <p class="landing-drag" aria-hidden="true">DRAG TO ROTATE <span>↗</span></p>
+      <p class="landing-drag" aria-hidden="true">ПОКРУТИТЕ ГЛОБУС <span>↗</span></p>
     </section>
 
     <section id="research-loader" class="research-loader" hidden aria-live="assertive" aria-labelledby="loader-title">
-      <div class="box-loader" aria-label="Research in progress" role="status">
+      <div class="box-loader" aria-label="Идёт исследование" role="status">
         <div class="boxes" aria-hidden="true">
           <div class="box box-1"><i class="face face-front"></i><i class="face face-right"></i><i class="face face-top"></i><i class="face face-back"></i></div>
           <div class="box box-2"><i class="face face-front"></i><i class="face face-right"></i><i class="face face-top"></i><i class="face face-back"></i></div>
@@ -57,9 +58,9 @@
       </div>
       <div class="loader-copy">
         <p class="loader-kicker">CAMPUS TRACE / LIVE RESEARCH</p>
-        <h2 id="loader-title">Preparing your field guide.</h2>
-        <p id="loader-phrase">Locating the university…</p>
-        <button id="loader-cancel" class="loader-cancel" type="button">Back to search</button>
+        <h2 id="loader-title">Собираем профиль.</h2>
+        <p id="loader-phrase">Ищем университет…</p>
+        <button id="loader-cancel" class="loader-cancel" type="button">Назад к поиску</button>
       </div>
       <div id="loader-preview" class="loader-preview" aria-live="polite" hidden></div>
     </section>
@@ -248,6 +249,19 @@
     </div>
   </main>
 
+  <div id="photo-viewer" class="viewer" hidden role="dialog" aria-modal="true" aria-label="Просмотр фото">
+    <div class="viewer-panel">
+      <div class="viewer-image">
+        <span id="viewer-counter" class="viewer-counter"></span>
+        <button id="viewer-prev" class="viewer-nav viewer-prev" type="button" aria-label="Предыдущее фото"><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button>
+        <img id="viewer-img" alt="">
+        <button id="viewer-next" class="viewer-nav viewer-next" type="button" aria-label="Следующее фото"><svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></button>
+      </div>
+      <div id="viewer-info" class="viewer-info"></div>
+      <button id="viewer-close" class="viewer-close" type="button" aria-label="Закрыть просмотр"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>
+  </div>
+
   <dialog id="evidence-dialog" aria-labelledby="evidence-title">
     <form method="dialog"><button class="close" aria-label="Закрыть">Закрыть</button></form>
     <p class="eyebrow">Происхождение и права</p>
@@ -258,7 +272,7 @@
   <script id="map-script" src="/static/vendor/maplibre-gl.js" defer></script>
   <script id="atlas-script" src="/static/atlas.js?v=7" defer></script>
   <script id="globe-script" src="/static/globe.js?v=4" defer></script>
-  <script id="app-script" src="/static/app.js?v=35" defer></script>
+  <script id="app-script" src="/static/app.js?v=38" defer></script>
   <script>
     // The app normally runs through FastAPI. This fallback preserves its visual
     // shell when index.html is opened directly from the project folder.
@@ -269,7 +283,7 @@
       document.getElementById('map-script').src = 'vendor/maplibre-gl.js';
       document.getElementById('atlas-script').src = 'atlas.js?v=7';
       document.getElementById('globe-script').src = 'globe.js?v=4';
-      document.getElementById('app-script').src = 'app.js?v=35';
+      document.getElementById('app-script').src = 'app.js?v=38';
       document.addEventListener('submit', (event) => {
         if (event.target?.id !== 'home-search-form') return;
         event.preventDefault();

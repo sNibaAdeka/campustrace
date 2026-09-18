@@ -727,6 +727,15 @@ async def build_profile(
                 if isinstance(value,dict) and 'latitude' in value:
                     institution['campus_coordinates'] = {'lat':value['latitude'], 'lon':value['longitude'], 'source':f"https://www.wikidata.org/wiki/{institution['wikidata_id']}#P625", 'precision':'institution_point'}
                     break
+            if 'campus_coordinates' not in institution:
+                # Many universities carry the point only as a qualifier of their
+                # headquarters location (P159 -> P625), not as their own P625.
+                for claim in claims.get('P159', []):
+                    for q in claim.get('qualifiers', {}).get('P625', []):
+                        value = q.get('datavalue', {}).get('value')
+                        if isinstance(value, dict) and 'latitude' in value and 'campus_coordinates' not in institution:
+                            institution['campus_coordinates'] = {'lat': value['latitude'], 'lon': value['longitude'],
+                                'source': f"https://www.wikidata.org/wiki/{institution['wikidata_id']}#P159", 'precision': 'headquarters_point'}
             institution['subreddit'] = next((v for v in values('P3984') if isinstance(v,str) and re.fullmatch(r'[A-Za-z0-9_]{2,21}', v)), None)
             institution['youtube_channel'] = next((v for v in values('P2397') if isinstance(v,str) and re.fullmatch(r'UC[\w-]{22}',v)), None)
             for prop in ('P18', 'P8517', 'P3451', 'P5775'):
@@ -839,6 +848,18 @@ async def build_profile(
         building_by_file.setdefault(row["file"], row)
         candidates[row["file"]] = "wikidata_building"
     institution["building_names"] = [b["label"] for b in typed_buildings if len(b["label"]) >= 5][:40]
+    if not institution.get("campus_coordinates"):
+        # No point for the university itself: use its main building, else the
+        # median of its buildings, and say so in the source field.
+        points = [b for b in typed_buildings if b.get("coord")]
+        main = next((b for b in points if re.search(r"main|главн|peahoone|hauptgebäude", b["label"], re.I)), None)
+        if main or points:
+            if main:
+                point, how = main["coord"], f"главное здание: {main['label']}"
+            else:
+                lats, lons = sorted(b["coord"]["lat"] for b in points), sorted(b["coord"]["lon"] for b in points)
+                point, how = {"lat": lats[len(lats) // 2], "lon": lons[len(lons) // 2]}, f"медиана {len(points)} зданий вуза"
+            institution["campus_coordinates"] = {**point, "source": f"Wikidata SPARQL ({how})", "precision": "buildings_point"}
     institution["buildings"] = list({b["qid"]: {"qid": b["qid"], "label": b["label"], "category": b["category"]}
                                      for b in typed_buildings}.values())[:40]
 

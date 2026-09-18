@@ -190,7 +190,10 @@ async def _forum_search(client: httpx.AsyncClient, name: str) -> list[dict[str, 
             for row in response.json().get("web",{}).get("results",[]) if _safe_url(row.get("url"))]
 
 
-SEARCH_MODELS = ("openai/gpt-oss-120b", "openai/gpt-oss-20b")
+# Each Groq model has its own per-minute token budget. Browsing is expensive
+# (tens of thousands of tokens of page text), so it runs on its own model and
+# never falls back onto the model that writes the summary and reads captions.
+SEARCH_MODELS = (os.getenv("GROQ_SEARCH_MODEL", "openai/gpt-oss-120b"),)
 
 
 async def _groq_web_search(client: httpx.AsyncClient, name: str, place: str, local: bool = False) -> list[dict[str, Any]]:
@@ -298,7 +301,7 @@ async def student_voices(institution: dict[str, Any]) -> dict[str, Any]:
     """Retrieve live public posts, then ask Groq for a source-grounded synthesis."""
     started = time.monotonic()
     name = str(institution["name"])
-    cache_key = f"voices:v7:{institution['ror_id']}:{bool(os.getenv('BRAVE_API_KEY'))}:{bool(os.getenv('GROQ_API_KEY'))}:{reddit_configured()}"
+    cache_key = f"voices:v8:{institution['ror_id']}:{bool(os.getenv('BRAVE_API_KEY'))}:{bool(os.getenv('GROQ_API_KEY'))}:{reddit_configured()}"
     cached = db.get_cached(cache_key)
     if cached: return {**cached, "from_cache":True}
     place = " ".join(str(x) for x in (institution.get("city"), institution.get("country")) if x)
@@ -354,5 +357,6 @@ async def student_voices(institution: dict[str, Any]) -> dict[str, Any]:
     platforms = sorted({src["platform"] for src in sources})
     result = {"available": True, "summary": str(result_report.get("summary", ""))[:1100], "themes": themes,
               "pros": grounded("pros"), "cons": grounded("cons"), "platforms": platforms, "caveat": str(result_report.get("caveat", ""))[:500], "sources": sources, "ai_available": report is not None, "media_policy": TEXT_ONLY_NOTE, "elapsed_ms": int((time.monotonic() - started) * 1000)}
-    db.set_cached(cache_key,result,86400)
+    # A summary lost to a rate limit must not be frozen for a day.
+    db.set_cached(cache_key, result, 86400 if (report is not None or not os.getenv("GROQ_API_KEY")) else 600)
     return result

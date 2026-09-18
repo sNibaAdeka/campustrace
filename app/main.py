@@ -71,7 +71,9 @@ def valid_ror(ror_id: str) -> str:
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(BASE / "static" / "index.html")
+    # The page names versioned assets (?v=N); it must itself never be cached,
+    # or a visitor keeps yesterday's scripts after a deploy.
+    return FileResponse(BASE / "static" / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/health")

@@ -259,12 +259,13 @@ class Sources:
         if not re.fullmatch(r"Q\d+", qid or ""):
             return []
         query = (
-            'SELECT ?b ?bLabel ?img ?cat (GROUP_CONCAT(DISTINCT ?typeLabel; separator="|") AS ?types) WHERE {\n'
+            'SELECT ?b ?bLabel ?img ?cat (SAMPLE(?c) AS ?coord) (GROUP_CONCAT(DISTINCT ?typeLabel; separator="|") AS ?types) WHERE {\n'
             f'  ?b wdt:P361|wdt:P137|wdt:P127 wd:{qid} .\n'
             '  ?b wdt:P18 ?img .\n'
             '  OPTIONAL { ?b wdt:P31 ?type . ?type rdfs:label ?typeLabel . FILTER(LANG(?typeLabel)="en") }\n'
             '  OPTIONAL { ?b rdfs:label ?bLabel . FILTER(LANG(?bLabel)="en") }\n'
             '  OPTIONAL { ?b wdt:P373 ?cat }\n'
+            '  OPTIONAL { ?b wdt:P625 ?c }\n'
             '} GROUP BY ?b ?bLabel ?img ?cat LIMIT 80'
         )
         data = await self.json(
@@ -423,6 +424,11 @@ class Sources:
         return data.get("web", {}).get("results", [])
 
 
+def _wkt_point(value: Any) -> dict[str, float] | None:
+    match = re.fullmatch(r"Point\(([-\d.]+) ([-\d.]+)\)", str(value or ""))
+    return {"lat": float(match.group(2)), "lon": float(match.group(1))} if match else None
+
+
 def parse_building_rows(data: Any) -> list[dict[str, Any]]:
     """SPARQL JSON → [{qid, label, file, types}]. Pure, unit tested."""
     rows = []
@@ -437,6 +443,7 @@ def parse_building_rows(data: Any) -> list[dict[str, Any]]:
             "file": "File:" + unquote(image.split("Special:FilePath/", 1)[1]).replace("_", " "),
             "types": [t for t in ((row.get("types") or {}).get("value") or "").split("|") if t],
             "commons_category": (row.get("cat") or {}).get("value") or None,
+            "coord": _wkt_point((row.get("coord") or {}).get("value")),
         })
     return rows
 
