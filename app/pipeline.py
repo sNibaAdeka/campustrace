@@ -919,7 +919,14 @@ async def build_profile(
                     assets.append(asset)
         except (SourceError, TimeoutError) as exc:
             openverse_task.cancel()
-            warnings.append(f"Openverse: {getattr(exc, 'detail', 'таймаут')}"); incomplete_sources.append("openverse")
+            detail = getattr(exc, 'detail', 'таймаут')
+            if detail in ("HTTP 401", "HTTP 403"):
+                # Openverse refuses anonymous datacenter traffic; this is a
+                # configuration limit (no client id), not a transient outage, so
+                # it must not label every profile "partial".
+                warnings.append("Openverse не подключён на этом хосте (нужен бесплатный OPENVERSE_CLIENT_ID/SECRET): фото оттуда не искались")
+            else:
+                warnings.append(f"Openverse: {detail}"); incomplete_sources.append("openverse")
 
     flickr_candidates = 0
     if os.getenv("FLICKR_API_KEY"):

@@ -1,0 +1,11 @@
+{
+  "services": {
+    "web": {
+      "root": ".",
+      "entrypoint": "api/index.py"
+    }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": { "type": "service", "service": "web" } }
+  ]
+}

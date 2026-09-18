@@ -11,3 +11,6 @@ _to_delete*/
 data/.fuse_hidden*
 .DS_Store
 .claude/
+.vercel/
+.vercel
+.env*
