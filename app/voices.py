@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 from . import db
+from .pipeline import names_institution_exactly
 
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -27,6 +28,51 @@ def _text(value: Any, limit: int = MAX_EXCERPT) -> str:
 
 def _safe_url(value: Any) -> str | None:
     return value if isinstance(value, str) and value.startswith(("https://", "http://")) else None
+
+
+_reddit_token: dict[str, Any] = {"value": None, "expires": 0.0}
+
+
+def reddit_configured() -> bool:
+    return bool(os.getenv("REDDIT_CLIENT_ID") and os.getenv("REDDIT_CLIENT_SECRET"))
+
+
+async def _reddit_official(client: httpx.AsyncClient, query: str, subreddit: str | None = None) -> list[dict[str, str]]:
+    """Reddit's own API (app-only OAuth, free 'script' app): the reliable path.
+
+    PullPush is a third-party archive that throttles hard and Reddit's public
+    endpoints refuse anonymous scripts; with an app id and secret this one is
+    rate-limited by Reddit itself at ~100 requests a minute.
+    """
+    if not reddit_configured():
+        return []
+    ua = {"User-Agent": "CampusTraceResearch/1.0 (+https://github.com/sNibaAdeka/campustrace)"}
+    if time.time() > _reddit_token["expires"] - 30:
+        response = await client.post(
+            "https://www.reddit.com/api/v1/access_token", data={"grant_type": "client_credentials"},
+            auth=(os.environ["REDDIT_CLIENT_ID"], os.environ["REDDIT_CLIENT_SECRET"]), headers=ua, timeout=10)
+        response.raise_for_status()
+        body = response.json()
+        _reddit_token.update(value=body["access_token"], expires=time.time() + float(body.get("expires_in", 3600)))
+    path = f"/r/{subreddit}/search" if subreddit else "/search"
+    params = {"q": query, "limit": 15, "sort": "top" if subreddit else "relevance", "t": "all", "type": "link", "raw_json": 1}
+    if subreddit:
+        params["restrict_sr"] = 1
+    response = await client.get("https://oauth.reddit.com" + path, params=params, timeout=10,
+                                headers={**ua, "Authorization": f"bearer {_reddit_token['value']}"})
+    response.raise_for_status()
+    found = []
+    for child in response.json().get("data", {}).get("children", []):
+        row = child.get("data") or {}
+        if row.get("over_18") or not row.get("permalink"):
+            continue
+        title, body = _text(row.get("title"), 180), _text(row.get("selftext"))
+        created = row.get("created_utc")
+        found.append({"title": title, "excerpt": body if body not in {"[removed]", "[deleted]"} else "",
+                      "subreddit": _text(row.get("subreddit"), 80), "url": f"https://www.reddit.com{row['permalink']}",
+                      "date": datetime.fromtimestamp(float(created), timezone.utc).date().isoformat() if created else None,
+                      "provider": "Reddit API"})
+    return found
 
 
 async def _reddit_search(client: httpx.AsyncClient, query: str) -> list[dict[str, str]]:
@@ -56,7 +102,8 @@ async def _reddit_search(client: httpx.AsyncClient, query: str) -> list[dict[str
     return found
 
 
-def _relevant(posts: list[dict[str, str]], name: str, aliases: list[str] | None = None) -> list[dict[str, str]]:
+def _relevant(posts: list[dict[str, str]], name: str, aliases: list[str] | None = None,
+              own_subreddit: str | None = None) -> list[dict[str, str]]:
     generic = {"university", "universiteit", "universität", "universite", "université", "университет", "college", "institute", "technology", "national", "state", "the"}
     tokens = {piece.lower() for piece in re.findall(r"[\w-]{3,}", name)} - generic
     keywords = {"dorm", "housing", "hostel", "residen", "campus", "tour", "choose", "общеж", "жиль", "студент"}
@@ -64,11 +111,13 @@ def _relevant(posts: list[dict[str, str]], name: str, aliases: list[str] | None 
     for post in posts:
         haystack = f"{post['title']} {post['excerpt']}".lower()
         names = [name, *(aliases or [])]
-        identity = any(len(alias.split()) >= 2 and alias.lower() in haystack for alias in names)
+        identity = names_institution_exactly(f"{post['title']} {post['excerpt']}", [n for n in names if len(n.split()) >= 2 or len(n) >= 3])
         # A single city word (Oxford, York, Astana) is insufficient evidence.
         # Dedicated named campus communities can identify an otherwise terse post.
         dedicated = {'stanford university':'stanford','university of oxford':'oxforduni','nazarbayev university':'nuredd','university of pennsylvania':'upenn'}
         identity = identity or post['subreddit'].lower() == dedicated.get(name.lower(), '__none__')
+        if own_subreddit and post['subreddit'].lower() == own_subreddit.lower():
+            identity = True  # the university's own community (Wikidata P3984)
         if not identity and post.get('provider') == 'Groq web search':
             identity = len(tokens) > 0 and all(t in haystack for t in tokens) and any(w in haystack for w in ('university','college','университет'))
         context = sum(keyword in haystack for keyword in keywords)
@@ -105,11 +154,15 @@ async def _forum_search(client: httpx.AsyncClient, name: str) -> list[dict[str, 
             for row in response.json().get("web",{}).get("results",[]) if _safe_url(row.get("url"))]
 
 
-async def _groq_web_search(client: httpx.AsyncClient, name: str, place: str) -> list[dict[str, Any]]:
+async def _groq_web_search(client: httpx.AsyncClient, name: str, place: str, angle: str = "housing") -> list[dict[str, Any]]:
     key = os.getenv('GROQ_API_KEY')
     if not key: return []
+    asks = {
+        "housing": f'Search the web for {name} {place} student housing dorm campus reviews. Prefer Reddit discussions, student newspapers and student forums. Give a brief answer.',
+        "life": f'Search the web for what students say about studying at {name} ({place}): campus life, classes, library, food, safety, cost of living. Prefer Reddit threads, student newspapers and student forums. Give a brief answer.',
+    }
     response = await client.post(GROQ_URL, headers={'Authorization':f'Bearer {key}'}, json={
-        'model':'groq/compound-mini', 'messages':[{'role':'user','content':f'Search the web for {name} {place} student housing dorm campus reviews. Prefer Reddit discussions, student newspapers and student forums. Give a brief answer.'}],
+        'model':'groq/compound-mini', 'messages':[{'role':'user','content':asks[angle]}],
         'max_tokens':500, 'compound_custom':{'tools':{'enabled_tools':['web_search']}}}, timeout=14)
     response.raise_for_status()
     message = (response.json().get('choices') or [{}])[0].get('message',{})
@@ -185,14 +238,23 @@ async def student_voices(institution: dict[str, Any]) -> dict[str, Any]:
     """Retrieve live public posts, then ask Groq for a source-grounded synthesis."""
     started = time.monotonic()
     name = str(institution["name"])
-    cache_key = f"voices:v4:{institution['ror_id']}:{bool(os.getenv('BRAVE_API_KEY'))}:{bool(os.getenv('GROQ_API_KEY'))}"
+    cache_key = f"voices:v5:{institution['ror_id']}:{bool(os.getenv('BRAVE_API_KEY'))}:{bool(os.getenv('GROQ_API_KEY'))}:{reddit_configured()}"
     cached = db.get_cached(cache_key)
     if cached: return {**cached, "from_cache":True}
     place = " ".join(str(x) for x in (institution.get("city"), institution.get("country")) if x)
-    queries = [f"{name} housing", f"{name} student campus", f"{name} dormitory {place}"]
-    async with httpx.AsyncClient(headers={"User-Agent": "CampusTraceResearch/1.0"}) as client:
-        batches = await asyncio.gather(*[_reddit_search(client, query) for query in queries], _forum_search(client, name), _groq_web_search(client,name,place), return_exceptions=True)
-    posts = _relevant([post for batch in batches if isinstance(batch,list) for post in batch], name, institution.get('aliases'))
+    short = next((a for a in institution.get("aliases", []) if 3 <= len(a) <= 6 and a.isupper() and " " not in a), None)
+    label = short or name
+    own = institution.get("subreddit")
+    queries = [f"{name} housing", f"{name} student campus", f"{name} dormitory {place}"] + ([f"{short} dorm housing"] if short else [])
+    async with httpx.AsyncClient(headers={"User-Agent": "CampusTraceResearch/1.0 (+https://github.com/sNibaAdeka/campustrace)"}) as client:
+        official = [_reddit_official(client, f'"{name}" housing OR dorm OR campus')] + (
+            [_reddit_official(client, "dorm OR housing OR campus OR classes OR library", own), _reddit_official(client, f"{short} dorm OR housing")] if own or short else [])
+        # PullPush only as a fallback: it throttles (HTTP 429) after a few requests.
+        archive = [] if reddit_configured() else [_reddit_search(client, query) for query in queries]
+        batches = await asyncio.gather(*official, *archive, _forum_search(client, name),
+                                       _groq_web_search(client, name, place, "housing"), _groq_web_search(client, name, place, "life"),
+                                       return_exceptions=True)
+    posts = _relevant([post for batch in batches if isinstance(batch,list) for post in batch], name, institution.get('aliases'), own)
     sources = [{"id":i+1, "title":post['title'], "url":post['url'], "excerpt":post['excerpt'] if post['subreddit'] else ' '.join(post['excerpt'].split()[:24])+'…', "date":post.get('date'), "provider":urlparse(post['url']).hostname, "community":post['subreddit']} for i,post in enumerate(posts)]
     if not posts:
         return {"available": True, "summary": "По открытым индексируемым обсуждениям не найдено достаточно релевантных свидетельств, чтобы делать вывод о проживании или студенческом опыте.", "themes": [], "caveat": "Отсутствие выдачи не означает отсутствия отзывов: часть сообществ может быть закрыта или не индексироваться.", "sources": [], "ai_available": bool(os.getenv("GROQ_API_KEY")), "elapsed_ms": int((time.monotonic() - started) * 1000)}

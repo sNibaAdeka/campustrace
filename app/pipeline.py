@@ -241,7 +241,7 @@ def classify(text: str, city_only: bool = False) -> tuple[str, list[str], str]:
 # owns maps, manuscripts and scans, but a scan of a map is not the library.
 DOCUMENT_WORDS = re.compile(
     r"\b(maps?|plan|plans|scan|scans|scanned|manuscripts?|folio|page|pages|book|books|letter|"
-    r"engraving|lithograph|painting|drawing|illustration|diagram|chart|карта|план|рукопис|гравюр)\b", re.I)
+    r"engraving|lithograph|painting|drawing|illustration|diagram|chart|exlibris|ex libris|bookplate|wappen|logo|карта|план|рукопис|гравюр)\b", re.I)
 # Subcategories that hold *collections* or *people*, not views of the campus.
 SUBCATEGORY_EXCLUDED = ("map", "plan", "manuscript", "collection", "scan", "copy", "book", "document",
                         "people", "alumni", "faculty members", "history", "art", "painting", "portrait",
@@ -285,6 +285,27 @@ def known_name_in_text(text: str, names: list[str]) -> bool:
     return False
 
 
+_SIBLING = re.compile(r"^\s+(of|for|at|hospital|press|medical|business|school|college)\b", re.I)
+
+
+def names_institution_exactly(text: str, names: list[str]) -> bool:
+    """Like known_name_in_text, but "Kyoto University of Art and Design" is not
+    "Kyoto University": a name followed by "of/for/hospital/press…" is another
+    organisation that merely starts with ours."""
+    haystack = norm(text)
+    padded = f" {haystack} "
+    for name in names:
+        candidate = norm(name)
+        if len(candidate) < 3:
+            continue
+        for match in re.finditer(re.escape(candidate), padded):
+            before_ok = padded[match.start() - 1] == " "
+            after = padded[match.end():]
+            if before_ok and (after[:1] == " ") and not _SIBLING.match(after):
+                return True
+    return False
+
+
 def dhash(image_bytes: bytes) -> str | None:
     try:
         with Image.open(io.BytesIO(image_bytes)) as im:
@@ -309,7 +330,7 @@ def _hashable_host(host: str) -> bool:
     # edges (observed: thumb.wikimedia.org, not just upload.wikimedia.org).
     # A too-narrow allowlist silently skipped hashing for ~100% of Commons
     # candidates, which meant visual near-duplicates were never detected.
-    return host.endswith("wikimedia.org") or host.endswith(".staticflickr.com")
+    return host.endswith("wikimedia.org") or host.endswith(".staticflickr.com") or host == "api.openverse.org"
 
 
 async def thumbnail_hashes(sources: Sources, assets: list[dict[str, Any]]) -> dict[str, int]:
@@ -379,8 +400,8 @@ def commons_asset(page: dict[str, Any], institution: dict[str, Any], scope: str,
     description = clean(meta.get("ImageDescription"))
     content = f"{title} {description}"
     city_only = scope == "city"
-    name_match = known_name_in_text(content, institution["aliases"])
-    title_name_match = known_name_in_text(title, institution["aliases"])
+    name_match = names_institution_exactly(content, institution["aliases"])
+    title_name_match = names_institution_exactly(title, institution["aliases"])
     title_scene = any(term in norm(title) for term in SCENE_TERMS) or (
         scope == "category" and len(title) <= 58 and
         any(term in norm(title) for term in ("university", "universit", "университет", "ülikool"))
@@ -500,6 +521,53 @@ def flickr_asset(item: dict[str, Any], institution: dict[str, Any]) -> dict[str,
         "sha1": None, "dhash": None,
         "reasons": ["Название файла содержит название университета", f"Лицензия Flickr: {license_name}", "Принадлежность конкретному объекту пока не подтверждена"],
         "scope": "flickr_search",
+    }
+
+
+OPENVERSE_LICENSES = {"by": "CC BY", "by-sa": "CC BY-SA", "cc0": "CC0", "pdm": "Public Domain Mark"}
+
+
+def openverse_asset(item: dict[str, Any], institution: dict[str, Any]) -> dict[str, Any] | None:
+    """One Openverse record -> asset, or None. Pure, unit tested.
+
+    The record must name the university (or one of its typed buildings) in its
+    title or tags: a search hit alone is not evidence. Its only evidence is that
+    text match, so its reliability stays low until the visual check agrees.
+    """
+    license_code = str(item.get("license") or "").lower()
+    if license_code not in OPENVERSE_LICENSES:
+        return None
+    title = clean(item.get("title"))
+    landing, thumb = item.get("foreign_landing_url"), item.get("thumbnail")
+    if not title or not landing or not thumb or urlparse(str(landing)).scheme not in ("http", "https"):
+        return None
+    if any(word in title.casefold() for word in EXCLUDED) or DOCUMENT_WORDS.search(title):
+        return None
+    tags = " ".join(clean(t.get("name")) for t in (item.get("tags") or []) if isinstance(t, dict))
+    # Two-letter acronyms (NU, KU) collide with everything; they never identify.
+    aliases = [a for a in institution["aliases"] if len(norm(a)) >= 3]
+    names = aliases + (institution.get("building_names") or [])
+    if not (names_institution_exactly(title, names) or names_institution_exactly(f"{title} {tags}", aliases)):
+        return None
+    # The category comes from the title only: a tag like "library" on a photo of
+    # a tightrope walker must not file it under libraries.
+    category, tags_found, text_evidence = classify(title)
+    version = clean(item.get("license_version"))
+    license_name = f"{OPENVERSE_LICENSES[license_code]}{' ' + version if version and license_code in ('by', 'by-sa') else ''}"
+    source = str(item.get("source") or item.get("provider") or "openverse").capitalize()
+    return {
+        "id": "openverse-" + hashlib.sha256(str(item.get("id") or landing).encode()).hexdigest()[:20],
+        "provider": f"Openverse / {source}", "title": title, "category": category, "tags": tags_found,
+        "status": "unknown" if category == "unknown" else "probable",
+        "source_url": str(landing), "image_url": str(thumb),
+        "author": clean(item.get("creator")) or "Не указан", "license": license_name,
+        "license_url": clean(item.get("license_url")) or None,
+        "published_at": None, "captured_at": None, "sha1": None, "dhash": None,
+        "reasons": [f"Открытая лицензия: {license_name} (Openverse)", "Название вуза есть в названии или тегах снимка",
+                    "Принадлежность конкретному объекту не подтверждена — только текст автора"],
+        "scope": "openverse", "text_evidence": text_evidence,
+        "evidence": [{"kind": "name_in_text", "detail": "название вуза в названии/тегах, указанных автором"}],
+        "distance_m": None, "coordinates": None,
     }
 
 
@@ -626,6 +694,7 @@ async def build_profile(
                 if isinstance(value,dict) and 'latitude' in value:
                     institution['campus_coordinates'] = {'lat':value['latitude'], 'lon':value['longitude'], 'source':f"https://www.wikidata.org/wiki/{institution['wikidata_id']}#P625", 'precision':'institution_point'}
                     break
+            institution['subreddit'] = next((v for v in values('P3984') if isinstance(v,str) and re.fullmatch(r'[A-Za-z0-9_]{2,21}', v)), None)
             institution['youtube_channel'] = next((v for v in values('P2397') if isinstance(v,str) and re.fullmatch(r'UC[\w-]{22}',v)), None)
             for prop in ('P18', 'P8517', 'P3451', 'P5775'):
                 for value in values(prop)[:3]:
@@ -639,6 +708,21 @@ async def build_profile(
                       if institution["wikidata_id"] else None)
     building_by_file: dict[str, dict[str, Any]] = {}
     depicts_titles: set[str] = set()
+    # Openverse is another host with its own limits: it overlaps with the serial
+    # Commons chain instead of adding to it.
+    # A three-letter-plus acronym ("MIT") is how Flickr users tag; the full name
+    # is the fallback when there is none.
+    short = next((a for a in institution["aliases"] if 3 <= len(a) <= 6 and a.isupper() and " " not in a), None)
+    ov_name = short or institution["name"]
+
+    async def openverse_all() -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        # The bare name finds the most; the two extra words target the
+        # categories that stay empty on Commons for most universities.
+        for query, size in ((ov_name, 30), (f"{ov_name} dormitory", 15), (f"{ov_name} library", 15)):
+            found.extend(await sources.openverse_images(query, limit=size))
+        return found
+    openverse_task = asyncio.ensure_future(openverse_all()) if os.getenv("OPENVERSE", "1") != "0" else None
 
     if not category_name:
         category_name = institution['name']
@@ -699,6 +783,26 @@ async def build_profile(
     institution["building_names"] = [b["label"] for b in typed_buildings if len(b["label"]) >= 5][:40]
     institution["buildings"] = list({b["qid"]: {"qid": b["qid"], "label": b["label"], "category": b["category"]}
                                      for b in typed_buildings}.values())[:40]
+
+    # Buildings that Wikidata types as a dormitory / library / sports venue /
+    # lecture hall usually have their own Commons category with dozens of views.
+    # These are exactly the categories that stay empty otherwise.
+    building_categories: list[tuple[str, dict[str, Any]]] = []
+    seen_cat: set[str] = set()
+    for wanted in ("dormitory", "library", "classroom", "sports"):
+        for row in typed_buildings:
+            if row["category"] == wanted and row.get("commons_category") and row["commons_category"] not in seen_cat:
+                building_categories.append((row["commons_category"], row)); seen_cat.add(row["commons_category"]); break
+    for cat, row in building_categories[:3]:
+        if budget_left() < 13:
+            incomplete_sources.append("commons_building_categories"); break
+        try:
+            for member in await sources.commons_category(cat, limit=40):
+                if member.get("ns") == 6 and member["title"] not in candidates:
+                    candidates[member["title"]] = "wikidata_building"
+                    building_by_file.setdefault(member["title"], row)
+        except SourceError as exc:
+            warnings.append(f"Commons {cat}: {exc.detail}"); incomplete_sources.append("commons_building_categories"); break
 
     depicts_qids = [institution["wikidata_id"]] + [b["qid"] for b in typed_buildings] if institution["wikidata_id"] else []
     if depicts_qids and budget_left() > 8:
@@ -799,6 +903,23 @@ async def build_profile(
         elif page.get("imageinfo") and not open_license(clean(((page["imageinfo"][0].get("extmetadata") or {}).get("LicenseShortName")))):
             rejected_license += 1
     first_asset_ms = int((time.monotonic() - started) * 1000) if assets else None
+
+    openverse_candidates = 0
+    if openverse_task is not None:
+        try:
+            items = await asyncio.wait_for(openverse_task, timeout=max(0.5, min(6.0, budget_left() - 6)))
+            openverse_candidates = len(items)
+            seen_landing: set[str] = set()
+            for item in items:
+                if item.get("foreign_landing_url") in seen_landing:
+                    continue
+                seen_landing.add(item.get("foreign_landing_url"))
+                if asset := openverse_asset(item, institution):
+                    asset["reliability"] = None
+                    assets.append(asset)
+        except (SourceError, TimeoutError) as exc:
+            openverse_task.cancel()
+            warnings.append(f"Openverse: {getattr(exc, 'detail', 'таймаут')}"); incomplete_sources.append("openverse")
 
     flickr_candidates = 0
     if os.getenv("FLICKR_API_KEY"):
@@ -902,7 +1023,7 @@ async def build_profile(
         "institution": institution, "summary": description["text"],
         "campus_facts": description["facts"], "assets": assets,
         "coverage": counts, "unclassified_count": unclassified_count,
-        "candidate_count": len(candidates) + flickr_candidates,
+        "candidate_count": len(candidates) + flickr_candidates + openverse_candidates,
         "license_eligible_count": license_eligible_count,
         "unique_count": unique_count,
         "duplicate_count": duplicate_count, "warnings": warnings,

@@ -79,6 +79,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8765
 | `MAPBOX_TOKEN` | Второй геокодер + альтернативные изохроны | Карта работает (MapLibre + OpenFreeMap, без ключа); координата помечается «только один источник» |
 | `BRAVE_API_KEY` | Поиск обсуждений на форумах и офиц. страниц | Работает только Reddit через PullPush |
 | `FLICKR_API_KEY` | Дополнительные фото под CC-лицензиями | Только Wikimedia Commons |
+| `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | Официальный Reddit API (бесплатное приложение типа script) для блока «Голоса студентов»; без него используется архив PullPush, который часто отвечает 429 | Меньше обсуждений; блок честно пишет, что найдено недостаточно |
 | `OPENROUTESERVICE_API_KEY` | Изохроны пешей доступности | Зона не рисуется (и **не** подменяется кругом) |
 | `YOUTUBE_API_KEY` | Видео с проверенного офиц. канала | Блок видео пуст |
 
@@ -198,6 +199,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8765
 | [Wikidata](https://www.wikidata.org/) | Commons-категория `P373`, координата `P625`, студенты `P2196`, канал `P2397`, изображения `P18/P8517/P3451/P5775` | CC0, без ключа |
 | [Wikidata Query Service](https://query.wikidata.org/) | SPARQL: здания и объекты вуза с фото и типом `P31` | CC0, без ключа |
 | [Wikimedia Commons](https://commons.wikimedia.org/) | Файлы, метаданные прав, структурированные данные `depicts` (P180), геопоиск | Лицензия у каждого файла своя; требуется корректный User-Agent |
+| [Openverse API](https://api.openverse.org/) | Открытые фото (в основном Flickr) с автором и ссылкой на первоисточник; берутся только лицензии CC BY, CC BY-SA, CC0, PDM; название вуза обязано быть в названии или тегах, категория — только из названия | Без ключа: 20 запросов/мин и 200/сутки; ответы кэшируются на 24 ч |
 | [Wikipedia API](https://www.mediawiki.org/wiki/API:Images) | Изображения статьи вуза, когда Commons беден | CC BY-SA, без ключа |
 | [OpenAlex](https://docs.openalex.org/api-entities/institutions) | Ряд публикаций по годам | CC0, без ключа |
 | [Open-Meteo](https://open-meteo.com/en/docs) | Погода города | Без ключа, некоммерческое использование |
@@ -391,7 +393,7 @@ docker run -p 8000:8000 -v campustrace-data:/data \
 ## 12. Тесты
 
 ```bash
-python3 -m unittest discover -s tests -v   # 65 тестов
+python3 -m unittest discover -s tests -v   # 71 тест
 python3 -m compileall -q app
 node --check static/app.js
 ```

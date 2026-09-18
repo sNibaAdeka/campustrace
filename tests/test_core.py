@@ -10,7 +10,7 @@ from app.pipeline import (
     build_profile, classify, commons_asset, deduplicate, describe_campus,
     institution_summary, known_name_in_text, latest_student_count,
     thumbnail_hashes, _hashable_host, VERSION, building_category, open_license,
-    evidence_level, valid_title, usable_subcategory, reliability,
+    evidence_level, valid_title, usable_subcategory, reliability, openverse_asset, names_institution_exactly,
 )
 from app.integrations import parse_building_rows
 from app.integrations import Sources, SourceError
@@ -461,6 +461,8 @@ class PipelineEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 return [p for p in pages if p["title"] in titles]
             async def flickr_search(self, name):
                 return []
+            async def openverse_images(self, query, limit=20):
+                return []
         return Stub()
 
     async def test_full_build_produces_an_honest_complete_profile(self):
@@ -746,3 +748,51 @@ class ReliabilityLevelTests(unittest.TestCase):
         self.assertEqual(reliability(disputed), {"level": "medium", "supporting": 3, "disputed": True})
         self.assertEqual(reliability({"category": "unknown", "evidence": [{"kind": "category"}, {"kind": "name_in_text"}]})["level"], "low")
         self.assertEqual(reliability({"category": "city", "evidence": [{"kind": "category"}, {"kind": "name_in_text"}]})["level"], "low")
+
+
+class OpenverseTests(unittest.TestCase):
+    def setUp(self):
+        self.institution = institution_summary({**RECORD, "id": "https://ror.org/042nb2s44",
+                                                "names": [{"value": "Massachusetts Institute of Technology", "types": ["ror_display"]},
+                                                          {"value": "MIT", "types": ["acronym"]}]})
+
+    def item(self, **kw):
+        base = {"id": "abc", "title": "Alvar Aalto, Baker House Dormitory MIT, 1947-48", "creator": "roryrory",
+                "license": "by-sa", "license_version": "2.0", "license_url": "https://creativecommons.org/licenses/by-sa/2.0/",
+                "foreign_landing_url": "https://www.flickr.com/photos/1/2", "thumbnail": "https://api.openverse.org/v1/images/x/thumb/",
+                "source": "flickr", "tags": [{"name": "mit"}, {"name": "dormitory"}]}
+        return {**base, **kw}
+
+    def test_named_open_licensed_photo_becomes_a_low_evidence_dormitory(self):
+        asset = openverse_asset(self.item(), self.institution)
+        self.assertEqual(asset["category"], "dormitory")
+        self.assertEqual(asset["license"], "CC BY-SA 2.0")
+        self.assertEqual(asset["source_url"], "https://www.flickr.com/photos/1/2")
+        self.assertEqual(reliability(asset)["level"], "low")  # one kind of evidence: the author's own words
+
+    def test_non_open_or_unnamed_or_document_records_are_dropped(self):
+        self.assertIsNone(openverse_asset(self.item(license="by-nc"), self.institution))
+        self.assertIsNone(openverse_asset(self.item(license="by-nd"), self.institution))
+        self.assertIsNone(openverse_asset(self.item(title="Sunset over Boston", tags=[{"name": "boston"}]), self.institution))
+        self.assertIsNone(openverse_asset(self.item(title="MIT campus map 1950"), self.institution))
+        self.assertIsNone(openverse_asset(self.item(foreign_landing_url=None), self.institution))
+
+    def test_acronym_in_a_word_is_not_a_match(self):
+        self.assertIsNone(openverse_asset(self.item(title="Summit dormitory", tags=[]), self.institution))
+
+    def test_tags_do_not_decide_the_category(self):
+        asset = openverse_asset(self.item(title="MIT tightrope walker", tags=[{"name": "library"}, {"name": "mit"}]), self.institution)
+        self.assertEqual(asset["category"], "unknown")
+
+    def test_two_letter_acronyms_never_identify_a_university(self):
+        nu = institution_summary({**RECORD, "names": [{"value": "Nazarbayev University", "types": ["ror_display"]},
+                                                       {"value": "NU", "types": ["acronym"]}]})
+        self.assertIsNone(openverse_asset(self.item(title="NU Skin store", tags=[{"name": "nu"}]), nu))
+
+    def test_sibling_organisations_are_not_the_university(self):
+        kyoto = institution_summary({**RECORD, "names": [{"value": "Kyoto University", "types": ["ror_display"]}]})
+        self.assertIsNone(openverse_asset(self.item(title="Kyoto University of Art and Design gate", tags=[]), kyoto))
+        self.assertIsNotNone(openverse_asset(self.item(title="Kyoto University Clock Tower", tags=[]), kyoto))
+        self.assertTrue(names_institution_exactly("MIT Great Dome", ["MIT"]))
+        self.assertFalse(names_institution_exactly("Kyoto University Hospital", ["Kyoto University"]))
+        self.assertFalse(names_institution_exactly("Summit dormitory", ["MIT"]))

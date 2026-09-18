@@ -61,7 +61,7 @@ class Sources:
     ) -> Any:
         start = time.monotonic()
         cache_key = None
-        if provider in {"commons", "wikidata", "ror", "wdqs"}:
+        if provider in {"commons", "wikidata", "ror", "wdqs", "openverse"}:
             cache_key = provider + ':' + hashlib.sha256(json.dumps([url, params], sort_keys=True).encode()).hexdigest()
             cached = db.get_cached(cache_key)
             if cached is not None:
@@ -235,12 +235,13 @@ class Sources:
         if not re.fullmatch(r"Q\d+", qid or ""):
             return []
         query = (
-            'SELECT ?b ?bLabel ?img (GROUP_CONCAT(DISTINCT ?typeLabel; separator="|") AS ?types) WHERE {\n'
+            'SELECT ?b ?bLabel ?img ?cat (GROUP_CONCAT(DISTINCT ?typeLabel; separator="|") AS ?types) WHERE {\n'
             f'  ?b wdt:P361|wdt:P137|wdt:P127 wd:{qid} .\n'
             '  ?b wdt:P18 ?img .\n'
             '  OPTIONAL { ?b wdt:P31 ?type . ?type rdfs:label ?typeLabel . FILTER(LANG(?typeLabel)="en") }\n'
             '  OPTIONAL { ?b rdfs:label ?bLabel . FILTER(LANG(?bLabel)="en") }\n'
-            '} GROUP BY ?b ?bLabel ?img LIMIT 80'
+            '  OPTIONAL { ?b wdt:P373 ?cat }\n'
+            '} GROUP BY ?b ?bLabel ?img ?cat LIMIT 80'
         )
         data = await self.json(
             "wdqs", "https://query.wikidata.org/sparql",
@@ -248,6 +249,22 @@ class Sources:
             headers={"Accept": "application/sparql-results+json"},
         )
         return parse_building_rows(data)
+
+    async def openverse_images(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Openly licensed photographs (mostly Flickr) indexed by Openverse.
+
+        Only the licences that allow reuse of an unaltered image with
+        attribution, commercial or not (CC BY, CC BY-SA, CC0, public domain).
+        Anonymous access is limited (20/min, 200/day), so every answer is
+        cached for 24 h by ``json`` and a 429 is reported, not retried.
+        """
+        data = await self.json(
+            "openverse", "https://api.openverse.org/v1/images/",
+            params={"q": query, "license": "by,by-sa,cc0,pdm", "page_size": str(limit),
+                    "mature": "false"},
+        )
+        return [x for x in (data.get("results", []) if isinstance(data, dict) else [])
+                if x.get("source") not in ("wikimedia", "wikimedia_commons")]
 
     async def commons_imageinfo(self, titles: list[str]) -> list[dict[str, Any]]:
         if not titles:
@@ -382,6 +399,7 @@ def parse_building_rows(data: Any) -> list[dict[str, Any]]:
             "label": (row.get("bLabel") or {}).get("value") or "",
             "file": "File:" + unquote(image.split("Special:FilePath/", 1)[1]).replace("_", " "),
             "types": [t for t in ((row.get("types") or {}).get("value") or "").split("|") if t],
+            "commons_category": (row.get("cat") or {}).get("value") or None,
         })
     return rows
 
