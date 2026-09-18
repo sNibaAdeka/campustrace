@@ -15,7 +15,12 @@ SEEDS = [
     {"ror_id":"00b30xv10","name":"University of Pennsylvania","aliases":["University of Pennsylvania","UPenn","Penn","Пенсильванский университет","Пеннсильванский университет"],"city":"Philadelphia","country":"United States","official_website":"https://www.upenn.edu/"},
 ]
 _cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
-_lock = asyncio.Lock()
+_locks: dict[str, asyncio.Lock] = {}
+# Organisations that share a university's name but are not where students live
+# and study. They stay in the list (the user may want them) but sink to the end.
+NOT_A_CAMPUS = ("press", "hospital", "foundation", "health", "clinic", "medical center", "medical centre",
+                "museum", "library system", "alumni", "bank", "city of", "school district", "издательств", "больниц")
+_CYRILLIC = __import__("re").compile(r"[а-яёәғқңөұүһі]", __import__("re").I)
 _TRANSLIT = str.maketrans({"а":"a","б":"b","в":"v","г":"g","д":"d","е":"e","ё":"e","ж":"zh","з":"z","и":"i","й":"i","к":"k","л":"l","м":"m","н":"n","о":"o","п":"p","р":"r","с":"s","т":"t","у":"u","ф":"f","х":"h","ц":"ts","ч":"ch","ш":"sh","щ":"shch","ъ":"","ы":"y","ь":"","э":"e","ю":"yu","я":"ya"})
 
 def normalized(value: str) -> str:
@@ -43,7 +48,7 @@ async def suggest(query: str, page: int = 1) -> dict[str, Any]:
     if len(q) < 2: return {"query":query,"results":[],"ambiguous":False,"source":"local"}
     now = time.monotonic()
     local = [dict(item) for item in SEEDS]
-    exact = [item for item in local if score(query, item) == 100]
+    exact = [item for item in local if score(query, item) == 100 and len(q) >= 3 or normalized(query) in [normalized(a) for a in item["aliases"]]]
     if exact and page == 1:
         return {"query":query,"results":[{**item,"match":"точное совпадение"} for item in exact],
                 "ambiguous":len(exact)>1,"source":"локальные синонимы ROR","has_more":False}
@@ -57,7 +62,7 @@ async def suggest(query: str, page: int = 1) -> dict[str, Any]:
     if stale and now - stale[0] < 600:
         live, total, wikidata_order = stale[1]
     elif len(q) >= 3:
-        async with _lock:
+        async with _locks.setdefault(cache_key, asyncio.Lock()):
             stale = _cache.get(cache_key)
             if stale and now - stale[0] < 600: live, total, wikidata_order = stale[1]
             else:
@@ -78,17 +83,43 @@ async def suggest(query: str, page: int = 1) -> dict[str, Any]:
                             wikidata_order = (await asyncio.wait_for(wiki_task, timeout=4))[:3]
                         except (SourceError, TimeoutError):
                             wiki_task.cancel(); wikidata_order = []
+                    # Cyrillic spelling of a Latin-registered name ("Сатпаев"):
+                    # retry the registry with a transliteration, and ask Wikidata
+                    # for the university rather than the person it is named after.
+                    if page == 1 and not live and _CYRILLIC.search(query):
+                        try:
+                            data = await source.ror_search_page(normalized(query), 1)
+                            live = [institution_summary(x) for x in data.get('items', [])]
+                            total = data.get('number_of_results', len(live))
+                            if live: warning = None
+                        except SourceError:
+                            pass
+                        if not wikidata_order:
+                            try:
+                                wikidata_order = (await asyncio.wait_for(source.wikidata_ror_candidates(f"{query} университет"), timeout=4))[:3]
+                            except (SourceError, TimeoutError):
+                                pass
+                    if page == 1 and not live and not wikidata_order:
+                        try:
+                            wikidata_order = (await asyncio.wait_for(source.wikidata_fulltext_ror(query), timeout=4))[:3]
+                        except (SourceError, TimeoutError, AttributeError):
+                            pass
                     known = {x['ror_id'] for x in live}
                     missing = [rid for rid in wikidata_order if rid not in known]
                     if missing:
                         fetched = await asyncio.gather(*(source.ror_get(rid) for rid in missing), return_exceptions=True)
-                        live = [institution_summary(r) for r in fetched if isinstance(r, dict) and r.get('id')] + live
+                        # Wikidata may point at a city, a press or a hospital with
+                        # a ROR ID; only education organisations are injected.
+                        added = [institution_summary(r) for r in fetched if isinstance(r, dict) and r.get('id')
+                                 and 'education' in (r.get('types') or [])]
+                        wikidata_order = [rid for rid in wikidata_order if rid in known or rid in {x['ror_id'] for x in added}]
+                        live = added + live
                         if warning and live: warning = None
                 finally: await source.close()
                 if not warning: _cache[cache_key] = (time.monotonic(), (live, total, wikidata_order))
     merged = {x['ror_id']: x for x in live}
     for item in local if page == 1 else []:
-        if score(query, item) < 35: continue
+        if score(query, item) < 60: continue
         old = merged.get(item['ror_id'], {})
         item['aliases'] = list(dict.fromkeys(item['aliases'] + old.get('aliases', [])))
         merged[item['ror_id']] = {**old, **item}
@@ -103,6 +134,8 @@ async def suggest(query: str, page: int = 1) -> dict[str, Any]:
             priority += 1000 - 100 * wikidata_order.index(item["ror_id"])
         if 'university' in primary or 'университет' in item['name'].lower(): priority += 6
         if any(word in primary for word in ('center ', 'centre ', 'hospital ', 'institute of')): priority -= 12
+        if any(word in item['name'].lower() for word in NOT_A_CAMPUS) and not any(word in q for word in NOT_A_CAMPUS):
+            priority -= 60
         return (-priority, len(primary), primary)
     ranked.sort(key=rank)
     results = []

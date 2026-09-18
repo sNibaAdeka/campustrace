@@ -209,6 +209,7 @@ def institution_summary(record: dict[str, Any]) -> dict[str, Any]:
         "official_domain": domains[0] if domains else None,
         "official_website": website,
         "wikidata_id": next((v for x in record.get("external_ids", []) if x.get("type") == "wikidata" for v in x.get("all", [])), None),
+        "types": [t for t in record.get("types", []) if isinstance(t, str)],
     }
 
 

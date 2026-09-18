@@ -709,8 +709,8 @@ class SearchRankingTests(unittest.IsolatedAsyncioTestCase):
     """Benchmark regression: 'MIT' resolved to MIT World Peace University."""
 
     async def test_wikidata_best_match_is_ranked_first_and_fetched_if_missing(self):
-        def rec(rid, name):
-            return {**RECORD, 'id': f'https://ror.org/{rid}', 'names': [{'value': name, 'types': ['ror_display']}]}
+        def rec(rid, name, kind='education'):
+            return {**RECORD, 'id': f'https://ror.org/{rid}', 'names': [{'value': name, 'types': ['ror_display']}], 'types': [kind]}
         source = type('Stub', (), {})()
         source.ror_search_page = AsyncMock(return_value={'items': [rec('0aaaaaaa1', 'MIT World Peace University')], 'number_of_results': 1})
         source.wikidata_ror_candidates = AsyncMock(return_value=['042nb2s44'])
@@ -833,3 +833,15 @@ class TriageTests(unittest.TestCase):
     def test_without_a_key_the_layer_is_a_no_op(self):
         with patch.dict(os.environ, {"GROQ_API_KEY": ""}):
             self.assertFalse(triage.configured())
+
+
+    async def test_a_city_with_a_ror_id_is_not_injected_as_a_university(self):
+        source = type('Stub', (), {})()
+        source.ror_search_page = AsyncMock(return_value={'items': [], 'number_of_results': 0})
+        source.wikidata_ror_candidates = AsyncMock(return_value=['0ccccccc1'])
+        source.ror_get = AsyncMock(return_value={**RECORD, 'id': 'https://ror.org/0ccccccc1',
+                                                  'names': [{'value': 'City of Toronto', 'types': ['ror_display']}], 'types': ['government']})
+        source.close = AsyncMock()
+        with patch('app.discovery.Sources', return_value=source), patch('app.discovery._cache', {}):
+            result = await suggest('Toronto')
+        self.assertEqual(result['results'], [])

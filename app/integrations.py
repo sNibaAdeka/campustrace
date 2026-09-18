@@ -152,6 +152,29 @@ class Sources:
                     break
         return result
 
+    async def wikidata_fulltext_ror(self, query: str, limit: int = 5) -> list[str]:
+        """Fallback when label-prefix search finds nothing: full-text search over
+        every label and alias, each word as a prefix ("Сатпаев*" matches
+        "…имени Сатпаева"), restricted to items that carry a ROR ID."""
+        words = [w for w in re.findall(r"[\w-]+", query) if len(w) >= 2][:6]
+        if not words:
+            return []
+        found = await self.json("wikidata", "https://www.wikidata.org/w/api.php", params={
+            "action": "query", "list": "search", "srsearch": " ".join(w + "*" for w in words) + " haswbstatement:P6782",
+            "srlimit": str(limit), "format": "json"})
+        ids = [x["title"] for x in found.get("query", {}).get("search", []) if re.fullmatch(r"Q\d+", x.get("title", ""))]
+        if not ids:
+            return []
+        entities = await self.json("wikidata", "https://www.wikidata.org/w/api.php", params={
+            "action": "wbgetentities", "ids": "|".join(ids), "props": "claims", "format": "json"})
+        result = []
+        for qid in ids:
+            for claim in entities.get("entities", {}).get(qid, {}).get("claims", {}).get("P6782", []):
+                value = claim.get("mainsnak", {}).get("datavalue", {}).get("value")
+                if isinstance(value, str) and re.fullmatch(r"[0-9a-z]{9}", value) and value not in result:
+                    result.append(value); break
+        return result
+
     async def ror_get(self, ror_id: str) -> dict[str, Any]:
         return await self.json("ror", f"https://api.ror.org/v2/organizations/{ror_id}")
 
