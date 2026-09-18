@@ -701,3 +701,31 @@ class PeopleAreNotPlacesTests(unittest.TestCase):
             self.assertEqual(classify(title)[0], "unknown", title)
         self.assertEqual(classify("Kyoto University Clock Tower building.jpg")[0], "campus")
         self.assertEqual(classify("Hydrology building.jpg")[0], "campus")
+
+
+class SearchRankingTests(unittest.IsolatedAsyncioTestCase):
+    """Benchmark regression: 'MIT' resolved to MIT World Peace University."""
+
+    async def test_wikidata_best_match_is_ranked_first_and_fetched_if_missing(self):
+        def rec(rid, name):
+            return {**RECORD, 'id': f'https://ror.org/{rid}', 'names': [{'value': name, 'types': ['ror_display']}]}
+        source = type('Stub', (), {})()
+        source.ror_search_page = AsyncMock(return_value={'items': [rec('0aaaaaaa1', 'MIT World Peace University')], 'number_of_results': 1})
+        source.wikidata_ror_candidates = AsyncMock(return_value=['042nb2s44'])
+        source.ror_get = AsyncMock(return_value=rec('042nb2s44', 'Massachusetts Institute of Technology'))
+        source.close = AsyncMock()
+        with patch('app.discovery.Sources', return_value=source), patch('app.discovery._cache', {}):
+            result = await suggest('MIT')
+        self.assertEqual(result['results'][0]['name'], 'Massachusetts Institute of Technology')
+        self.assertIn('Wikidata', result['results'][0]['match'])
+        self.assertEqual(len(result['results']), 2)
+
+    async def test_search_survives_wikidata_outage(self):
+        source = type('Stub', (), {})()
+        source.ror_search_page = AsyncMock(return_value={'items': [RECORD], 'number_of_results': 1})
+        source.wikidata_ror_candidates = AsyncMock(side_effect=SourceError('wikidata', 'HTTP 503'))
+        source.close = AsyncMock()
+        with patch('app.discovery.Sources', return_value=source), patch('app.discovery._cache', {}):
+            result = await suggest('Nazarbayev Univ')
+        self.assertEqual(result['results'][0]['ror_id'], '052bx8q98')
+        self.assertIsNone(result['warning'])

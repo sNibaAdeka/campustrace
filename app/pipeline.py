@@ -634,6 +634,10 @@ async def build_profile(
                        if x.get("ns") == 14 and any(t in x["title"].casefold() for t in SUBCATEGORY_TERMS)
                        and usable_subcategory(x["title"])]
             for subcat in subcats[:4]:
+                if budget_left() < 14:
+                    incomplete_sources.append("commons_subcategories")
+                    warnings.append("Часть подкатегорий Commons пропущена: не хватило времени в бюджете")
+                    break
                 try:
                     members_of_subcat = await sources.commons_category(subcat, limit=200)
                     for item in members_of_subcat:
@@ -643,6 +647,8 @@ async def build_profile(
                         nested = [x["title"].removeprefix("Category:") for x in members_of_subcat
                                   if x.get("ns") == 14 and usable_subcategory(x["title"])]
                         for child in nested[:2]:
+                            if budget_left() < 15:
+                                break
                             for item in await sources.commons_category(child, limit=60):
                                 if item.get("ns") == 6:
                                     candidates.setdefault(item["title"], f"category_sub:{child}")
@@ -712,7 +718,7 @@ async def build_profile(
 
     # Use the institution's linked encyclopedia article when Commons search has
     # sparse coverage. Only files that also have Commons licence metadata survive.
-    if len(candidates) < 25:
+    if len(candidates) < 25 and budget_left() > 10:
         for language in ('en', 'ru'):
             title = details.get('sitelinks',{}).get(language+'wiki',{}).get('title')
             if not title: continue
@@ -726,7 +732,7 @@ async def build_profile(
             break
 
     # City search is explicitly a different claim from a campus photograph.
-    if institution.get("city"):
+    if institution.get("city") and budget_left() > 9:
         try:
             hits = await sources.commons_search(f'{institution["city"]} skyline', limit=12)
             for hit in hits:
@@ -749,6 +755,10 @@ async def build_profile(
                 groups["category"][:28] + groups["geo"][:24] + groups["search"][:24] + groups["city"][:8])[:150]
     pages: list[dict[str, Any]] = []
     for start in range(0, len(selected), 50):
+        if start and budget_left() < 7:
+            incomplete_sources.append("commons_metadata")
+            warnings.append("Метаданные части кандидатов не запрошены: не хватило времени в бюджете")
+            break
         try:
             pages.extend(await sources.commons_imageinfo([t for t, _ in selected[start:start+50]]))
         except SourceError as exc:
@@ -788,7 +798,14 @@ async def build_profile(
         not known_name_in_text(a["title"], institution["aliases"]),
     ))
     hash_started = time.monotonic()
-    hash_stats = await thumbnail_hashes(sources, assets)
+    try:
+        hash_stats = await asyncio.wait_for(thumbnail_hashes(sources, assets), timeout=max(1.0, min(8.0, budget_left() - 4)))
+    except TimeoutError:
+        # Hashing is cut, not the profile: unhashed candidates keep a reason
+        # saying their visual duplicate check did not run.
+        hash_stats = {"hash_attempted": sum(1 for a in assets[:40] if a.get("image_url")),
+                      "hash_succeeded": sum(1 for a in assets if a.get("dhash"))}
+        warnings.append("Проверка визуальных дублей прервана по бюджету времени")
     stage("visual_hash", hash_started)
     license_eligible_count = len(assets)
     assets, duplicate_count = deduplicate(assets)

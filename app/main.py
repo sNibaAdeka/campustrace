@@ -148,7 +148,7 @@ async def profile_preview(ror_id: str) -> dict[str, Any]:
         return {"institution": cached["institution"], "assets": cached["assets"][:12],
                 "elapsed_ms": 0, "preview": True, "from_cache": True}
     started = time.monotonic()
-    sources = Sources()
+    sources = Sources(priority=True)
     try:
         record = await sources.ror_get(ror_id)
         return await asyncio.wait_for(build_preview(sources, record, started=started), timeout=10)
@@ -187,9 +187,11 @@ async def _build(ror_id: str, cached: dict[str, Any] | None) -> dict[str, Any]:
         # The identity lookup is part of the user's wait, so it is inside both
         # the measured elapsed time and the 30-second budget.
         record = await asyncio.wait_for(sources.ror_get(ror_id), timeout=max(1.0, deadline - time.monotonic()))
+        # The builder watches ``deadline`` itself and returns a partial profile;
+        # this outer limit is only a backstop against a hung connection.
         result = await asyncio.wait_for(
             build_profile(sources, record, started=started, deadline=deadline),
-            timeout=max(1.0, deadline - time.monotonic()),
+            timeout=max(1.0, deadline + 3 - time.monotonic()),
         )
         if not result["assets"] and result["warnings"]:
             if cached and cached["assets"]:

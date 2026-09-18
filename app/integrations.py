@@ -37,7 +37,11 @@ class SourceError(Exception):
 
 
 class Sources:
-    def __init__(self) -> None:
+    def __init__(self, *, priority: bool = False) -> None:
+        # ``priority`` is used only by the preview: its single Commons metadata
+        # request must not queue behind the full build's serial chain. That is
+        # one extra request per profile, not a parallel burst.
+        self.priority = priority
         timeout = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "8"))
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout),
@@ -68,7 +72,7 @@ class Sources:
         try:
             # Wikimedia asks API clients to identify themselves and avoid request bursts.
             # Sources instances are created per profile, so the limiter must be shared.
-            if provider == "commons":
+            if provider == "commons" and not self.priority:
                 global _commons_last, _commons_retry_at
                 if time.monotonic() < _commons_retry_at:
                     raise SourceError(provider, "HTTP 429: источник восстанавливает лимит, повторите через минуту")
@@ -120,6 +124,32 @@ class Sources:
         data = await self.json("wikidata", "https://www.wikidata.org/w/api.php", params={
             "action": "wbgetentities", "ids": qid, "props": "claims|sitelinks", "format": "json"})
         return data.get("entities", {}).get(qid, {})
+
+    async def wikidata_ror_candidates(self, query: str, limit: int = 7) -> list[str]:
+        """ROR IDs of the Wikidata items that best match a free-text name.
+
+        Wikidata search ranks well-known entities first and understands labels
+        and aliases in every language ("MIT", "МГУ", "Universität Heidelberg"),
+        which the ROR text query alone ranks poorly. Only items that carry a
+        ROR ID (P6782) are returned, in Wikidata's own order.
+        """
+        language = "ru" if re.search(r"[а-яёәғқңөұүһі]", query.casefold()) else "en"
+        found = await self.json("wikidata", "https://www.wikidata.org/w/api.php", params={
+            "action": "wbsearchentities", "search": query.strip(), "language": language,
+            "uselang": language, "type": "item", "limit": str(limit), "format": "json"})
+        ids = [x["id"] for x in found.get("search", []) if re.fullmatch(r"Q\d+", x.get("id", ""))]
+        if not ids:
+            return []
+        entities = await self.json("wikidata", "https://www.wikidata.org/w/api.php", params={
+            "action": "wbgetentities", "ids": "|".join(ids), "props": "claims", "format": "json"})
+        result = []
+        for qid in ids:
+            for claim in entities.get("entities", {}).get(qid, {}).get("claims", {}).get("P6782", []):
+                value = claim.get("mainsnak", {}).get("datavalue", {}).get("value")
+                if isinstance(value, str) and re.fullmatch(r"[0-9a-z]{9}", value) and value not in result:
+                    result.append(value)
+                    break
+        return result
 
     async def ror_get(self, ror_id: str) -> dict[str, Any]:
         return await self.json("ror", f"https://api.ror.org/v2/organizations/{ror_id}")

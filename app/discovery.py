@@ -49,26 +49,43 @@ async def suggest(query: str, page: int = 1) -> dict[str, Any]:
                 "ambiguous":len(exact)>1,"source":"локальные синонимы ROR","has_more":False}
     # ROR is not used for every keystroke: shared 10-minute query cache.
     live: list[dict[str, Any]] = []
+    wikidata_order: list[str] = []
     cache_key = f"{q}:{page}"
     stale = _cache.get(cache_key)
     total = 0
     warning = None
     if stale and now - stale[0] < 600:
-        live, total = stale[1]
+        live, total, wikidata_order = stale[1]
     elif len(q) >= 3:
         async with _lock:
             stale = _cache.get(cache_key)
-            if stale and now - stale[0] < 600: live, total = stale[1]
+            if stale and now - stale[0] < 600: live, total, wikidata_order = stale[1]
             else:
                 source = Sources()
                 try:
-                    data = await source.ror_search_page(query, page)
-                    live = [institution_summary(x) for x in data.get('items', [])]
-                    total = data.get('number_of_results', len(live))
-                except SourceError as exc:
-                    warning = f"ROR временно недоступен ({exc.detail}). Повторите поиск."
+                    # ROR is the registry of record; Wikidata search is run in
+                    # parallel only to *rank*: it knows that "MIT" usually means
+                    # the one in Cambridge and that "МГУ" is Lomonosov MSU.
+                    wiki_task = asyncio.ensure_future(source.wikidata_ror_candidates(query)) if page == 1 else None
+                    try:
+                        data = await source.ror_search_page(query, page)
+                        live = [institution_summary(x) for x in data.get('items', [])]
+                        total = data.get('number_of_results', len(live))
+                    except SourceError as exc:
+                        warning = f"ROR временно недоступен ({exc.detail}). Повторите поиск."
+                    if wiki_task is not None:
+                        try:
+                            wikidata_order = (await asyncio.wait_for(wiki_task, timeout=4))[:3]
+                        except (SourceError, TimeoutError):
+                            wiki_task.cancel(); wikidata_order = []
+                    known = {x['ror_id'] for x in live}
+                    missing = [rid for rid in wikidata_order if rid not in known]
+                    if missing:
+                        fetched = await asyncio.gather(*(source.ror_get(rid) for rid in missing), return_exceptions=True)
+                        live = [institution_summary(r) for r in fetched if isinstance(r, dict) and r.get('id')] + live
+                        if warning and live: warning = None
                 finally: await source.close()
-                if not warning: _cache[cache_key] = (time.monotonic(), (live, total))
+                if not warning: _cache[cache_key] = (time.monotonic(), (live, total, wikidata_order))
     merged = {x['ror_id']: x for x in live}
     for item in local if page == 1 else []:
         if score(query, item) < 35: continue
@@ -82,11 +99,15 @@ async def suggest(query: str, page: int = 1) -> dict[str, Any]:
         relevance, item = pair
         primary = normalized(item['name'])
         priority = relevance + (25 if q in primary else 0)
+        if item['ror_id'] in wikidata_order:
+            priority += 200 - 20 * wikidata_order.index(item['ror_id'])
         if 'university' in primary or 'университет' in item['name'].lower(): priority += 6
         if any(word in primary for word in ('center ', 'centre ', 'hospital ', 'institute of')): priority -= 12
         return (-priority, len(primary), primary)
     ranked.sort(key=rank)
     results = []
     for relevance, item in ranked:
-        results.append({**item, "match": "точное совпадение" if relevance >= 100 else "похожее название" if relevance < 70 else "совпадение названия"})
-    return {"query":query,"results":results,"ambiguous":len(results)>1,"source":"ROR + локальные синонимы", "page":page, "total":total, "has_more":page * 20 < min(total, 10000), "warning":warning}
+        match = "точное совпадение" if relevance >= 100 else "похожее название" if relevance < 70 else "совпадение названия"
+        if item['ror_id'] in wikidata_order[:1]: match = "лучшее совпадение (Wikidata)"
+        results.append({**item, "match": match})
+    return {"query":query,"results":results,"ambiguous":len(results)>1,"source":"ROR + Wikidata (ранжирование) + локальные синонимы", "page":page, "total":total, "has_more":page * 20 < min(total, 10000), "warning":warning}
