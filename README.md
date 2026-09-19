@@ -355,7 +355,7 @@ submit → полный профиль: p50 22208 мс, p95 24621 мс, макс
 
 В репозитории лежат готовые конфигурации; выберите **одну**.
 
-### Vercel (развёрнуто: https://campustrace-ten.vercel.app)
+### Vercel (развёрнуто: https://campustraceapp.vercel.app)
 
 `vercel.json` описывает один сервис FastAPI с точкой входа `api/index.py` (она создаёт схему SQLite при импорте: на Vercel файловая система только для чтения, кроме `/tmp`). Деплой: `vercel link --yes --project campustrace`, затем `vercel deploy --prod --yes`; репозиторий подключён, поэтому каждый push в `main` выкатывается сам. Переменные окружения проекта: `CAMPUS_TRACE_USER_AGENT`, `DATABASE_PATH=/tmp/campustrace.sqlite3`; `GROQ_API_KEY` добавляется владельцем вручную (`vercel env add GROQ_API_KEY production`).
 
