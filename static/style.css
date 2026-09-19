@@ -833,3 +833,9 @@ body.has-profile .search-panel { border:1px solid var(--line); background:var(--
    short laptop viewports. clip never scrolls. */
 .landing { overflow: clip; height: 100svh; }
 .home-search-results { max-height: calc(100svh - 240px); overflow-y: auto; }
+
+/* Brand display face on the landing too (Unbounded, Cyrillic). It is wider
+   than Inter, so the size scale is reduced to keep two lines on laptops. */
+.landing h1 { font-family: "Unbounded", "Onest", "Segoe UI", sans-serif; font-weight: 700;
+  font-size: clamp(34px, min(6.4vw, 11svh), 104px); letter-spacing: -0.035em; line-height: 1.02; }
+@media (max-width: 760px) { .landing h1 { font-size: clamp(30px, 9.6vw, 52px); } }

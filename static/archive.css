@@ -41,7 +41,7 @@
 
   --font-display: "Unbounded", "Onest", system-ui, sans-serif;
   --font-text: "Onest", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --font-mono: "Martian Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 
 body.has-profile { font-family: var(--font-text); background: var(--ink-0); }
@@ -203,3 +203,7 @@ body.has-profile::before {
 .chart rect { transition: opacity .15s; }
 .chart svg:hover rect { opacity: .55; }
 .chart svg rect:hover { opacity: 1; }
+
+/* Martian Mono runs wide: set it a touch smaller wherever it labels data. */
+.eyebrow, .card-badge, .voice-kind, .source-num, .news-meta, .rail-count, .drawer-kicker, .chart-value, .chart-muted,
+.about-card .about-source, .hero-photo figcaption { font-size: .92em; letter-spacing: -.01em; }
