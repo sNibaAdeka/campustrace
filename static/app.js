@@ -129,7 +129,7 @@ async function search(query, resultId, onChoose, quiet = false, page = 1, submit
     const data = await api(`/api/search/suggest?q=${encodeURIComponent(query)}&page=${page}`);
     if (sequence !== searchSequence[resultId]) return;
     if (page === 1) holder.replaceChildren();
-    if (submit && data.results.length && (data.results.length === 1 || data.results[0].match === 'точное совпадение')) {
+    if (submit && data.results.length && (data.results.length === 1 || ['точное совпадение', 'лучшее совпадение (Wikidata)'].includes(data.results[0].match))) {
       onChoose(data.results[0]); return;
     }
     if (data.warning) holder.append(node('p', data.warning, 'search-message'));
@@ -163,6 +163,7 @@ async function loadProfile(rorId, refresh = false) {
     $('profile').hidden = false;
     document.body.classList.add('has-profile');
     window.CampusAtlas?.load(rorId);
+    window.setTimeout(() => window.CampusAtlas?.resize?.(), 60);
     $('extras').replaceChildren(node('p', 'Загружаем дополнительные источники.', 'hint'));
     $('student-voices').replaceChildren(node('p', 'Ищу публичные обсуждения студентов и общежитий…', 'hint'));
     status(profile.from_cache ? 'Профиль загружен из кэша.' : `Профиль собран за ${Math.round(profile.elapsed_ms / 1000)} с.`, 'success');
@@ -286,7 +287,7 @@ function renderProfile() {
   renderProfileStatus(); renderFacts(); renderHero(); renderSocial();
   state.voices = null; state.news = null; state.openSource = null; $('source-drawer').hidden = true;
   renderAbout(); renderAsk(); renderRail();
-  renderFilters(); renderGallery(); renderCoverage(); renderFunnel();
+  renderFilters(); renderGallery(); renderCoverage(); renderFunnel(); renderCharts();
 }
 
 function renderProfileStatus() {
@@ -488,6 +489,19 @@ function renderHero() {
   const p = state.profile, inst = p.institution;
   const best = [...p.assets].filter(a => a.category !== 'city').sort((a, b) => (b.evidence_level || 0) - (a.evidence_level || 0))[0];
   document.querySelector('.profile-overview')?.style.setProperty('--hero-image', best ? `url("${thumbOf(best, 960).replace(/"/g, '%22')}")` : 'none');
+  // A sharp, credited cover photo: the first thing a student wants to see.
+  let cover = $('hero-photo');
+  if (!cover) { cover = node('figure', null, 'hero-photo'); cover.id = 'hero-photo'; $('profile-status')?.before(cover); }
+  cover.replaceChildren(); cover.hidden = !best;
+  if (best) {
+    const btn = node('button', null, 'hero-photo-btn'); btn.type = 'button';
+    btn.setAttribute('aria-label', `Открыть фото: ${best.title}`);
+    const img = node('img'); img.src = best.image_url; img.alt = best.title; img.decoding = 'async';
+    btn.append(img);
+    btn.addEventListener('click', () => { state.filter = 'all'; renderFilters(); renderGallery(); openViewer(selectedAssets().indexOf(best)); });
+    const cap = node('figcaption'); cap.append(node('span', `${best.author || 'Автор не указан'} · ${best.license} · `), link('источник', best.source_url));
+    cover.append(btn, cap);
+  }
   let stats = $('hero-stats');
   if (!stats) { stats = node('ul', null, 'hero-stats'); stats.id = 'hero-stats'; document.querySelector('.profile-identity')?.append(stats); }
   stats.replaceChildren();
@@ -985,4 +999,90 @@ async function loadNews() {
     $('news-section').hidden = !(data.articles || []).length;
     renderRail();
   } catch (_) { /* news are optional */ }
+}
+
+// ---- Charts: what the gallery is made of ------------------------------------
+// Reliability is ordinal, so one hue in three validated steps (dark surface
+// #141922: CVD ΔE ≥ 17.6, normal ΔE ≥ 18.7, contrast ≥ 3:1), plus a legend and
+// direct totals so no value is carried by colour alone.
+const REL_COLORS = { high: '#BFE0FF', medium: '#6AA7EA', low: '#3A6CAD' };
+const REL_NAMES = { high: 'высокая', medium: 'средняя', low: 'низкая' };
+const SVGNS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs = {}, text) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+  if (text != null) el.textContent = String(text);
+  return el;
+}
+function chartLegend() {
+  const legend = node('ul', null, 'chart-legend');
+  for (const level of ['high', 'medium', 'low']) {
+    const li = node('li'); const sw = node('span', null, 'chart-swatch'); sw.style.background = REL_COLORS[level];
+    li.append(sw, node('span', `достоверность ${REL_NAMES[level]}`)); legend.append(li);
+  }
+  return legend;
+}
+function renderCharts() {
+  const holder = $('charts'); if (!holder) return;
+  holder.replaceChildren();
+  const assets = state.profile.assets.filter(a => a.category !== 'unknown');
+  if (!assets.length) return;
+
+  // 1. Photos per category, stacked by reliability.
+  const rows = categories.map(cat => {
+    const list = assets.filter(a => a.category === cat);
+    const by = { high: 0, medium: 0, low: 0 };
+    for (const a of list) by[a.reliability?.level || 'low'] += 1;
+    return { cat, total: list.length, by };
+  });
+  const max = Math.max(1, ...rows.map(r => r.total));
+  const W = 560, rowH = 30, labelW = 150, H = rows.length * rowH + 8;
+  const fig1 = node('figure', null, 'chart');
+  fig1.append(node('figcaption', 'Фото по разделам'));
+  fig1.append(chartLegend());
+  const svg1 = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Число фото с открытой лицензией по разделам и уровню достоверности' });
+  rows.forEach((r, i) => {
+    const y = i * rowH + 4;
+    svg1.append(svgEl('text', { x: 0, y: y + 17, class: 'chart-label' }, labels[r.cat]));
+    let x = labelW; const span = W - labelW - 44;
+    for (const level of ['high', 'medium', 'low']) {
+      const n = r.by[level]; if (!n) continue;
+      const w = Math.max(3, (n / max) * span - 2);
+      const rect = svgEl('rect', { x, y: y + 5, width: w, height: 16, rx: 3, fill: REL_COLORS[level] });
+      rect.append(svgEl('title', {}, `${labels[r.cat]}: ${n} фото, достоверность ${REL_NAMES[level]}`));
+      svg1.append(rect); x += w + 2;
+    }
+    svg1.append(svgEl('text', { x: r.total ? x + 6 : labelW, y: y + 17, class: r.total ? 'chart-value' : 'chart-muted' }, r.total ? r.total : 'нет в открытых источниках'));
+  });
+  fig1.append(svg1);
+
+  // 2. Photos by year (taken, else uploaded).
+  const years = {};
+  for (const a of assets) { const m = String(a.captured_at || a.published_at || '').match(/(19|20)\d{2}/); if (m) years[m[0]] = (years[m[0]] || 0) + 1; }
+  const keys = Object.keys(years).map(Number).sort((a, b) => a - b);
+  const fig2 = node('figure', null, 'chart');
+  fig2.append(node('figcaption', 'Когда сняты фото'));
+  if (keys.length) {
+    const from = Math.max(keys[0], keys[keys.length - 1] - 19), to = keys[keys.length - 1];
+    const span = []; for (let y = from; y <= to; y++) span.push(y);
+    const older = keys.filter(y => y < from).reduce((s, y) => s + years[y], 0);
+    const peak = Math.max(1, ...span.map(y => years[y] || 0));
+    const W2 = 560, H2 = 170, base = 140, colW = (W2 - 10) / span.length;
+    const svg2 = svgEl('svg', { viewBox: `0 0 ${W2} ${H2}`, role: 'img', 'aria-label': 'Число фото по году съёмки или загрузки' });
+    svg2.append(svgEl('line', { x1: 0, x2: W2, y1: base + 0.5, y2: base + 0.5, class: 'chart-axis' }));
+    span.forEach((y, i) => {
+      const n = years[y] || 0, h = (n / peak) * 110, x = 5 + i * colW;
+      if (n) {
+        const rect = svgEl('rect', { x: x + 2, y: base - h, width: Math.max(4, colW - 4), height: h, rx: 3, fill: REL_COLORS.medium });
+        rect.append(svgEl('title', {}, `${y}: ${n} фото`)); svg2.append(rect);
+        if (n === peak) svg2.append(svgEl('text', { x: x + colW / 2, y: base - h - 6, 'text-anchor': 'middle', class: 'chart-value' }, n));
+      }
+      if (i === 0 || i === span.length - 1 || y % 5 === 0) svg2.append(svgEl('text', { x: x + colW / 2, y: base + 18, 'text-anchor': 'middle', class: 'chart-muted' }, y));
+    });
+    fig2.append(svg2);
+    if (older) fig2.append(node('p', `Ещё ${older} фото старше ${from} года.`, 'chart-note'));
+  } else {
+    fig2.append(node('p', 'У найденных фото нет даты съёмки или загрузки.', 'chart-note'));
+  }
+  holder.append(fig1, fig2);
 }

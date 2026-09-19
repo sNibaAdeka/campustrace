@@ -128,7 +128,7 @@
       say('map-status','Глобус показывает расположение университета. Приближаем кампус…');
       if (canAnimate()) window.setTimeout(() => { if (sequence === requestSequence) setMode('campus'); }, 1450);
       else setMode('campus');
-      document.querySelector('#atlas-section')?.scrollIntoView({behavior:canAnimate()?'smooth':'instant',block:'start'});
+      // The map now opens the profile, so loading it must not move the page.
     }catch(err){say('map-status','Не удалось загрузить географию: '+err.message);}
   }
   function setUnverified(candidate) {
