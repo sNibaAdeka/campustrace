@@ -335,7 +335,9 @@ function renderFilters() {
     const button = node('button');
     button.type = 'button'; button.setAttribute('aria-pressed', String(state.filter === filter));
     const count = state.profile.assets.filter(a => filter === 'all' || a.category === filter || (a.tags || []).includes(filter)).length;
-    button.append(node('span', filter === 'all' ? 'Все материалы' : labels[filter]), node('span', count, 'filter-count'));
+    const label = node('span', null, 'filter-label');
+    label.append(uiIcon(filter), node('span', filter === 'all' ? 'Все материалы' : labels[filter]));
+    button.append(label, node('span', count, 'filter-count'));
     button.addEventListener('click', () => { state.filter = filter; renderFilters(); renderGallery(); });
     holder.append(button);
   }
@@ -350,8 +352,16 @@ const ICON = {
   minus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>',
   share: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8.2 10.8 7.6-4.4M8.2 13.2l7.6 4.4"/></svg>',
 };
+// Phosphor duotone marks (static/ui-icons.js); the inline set above is the fallback.
+function uiIcon(key) {
+  const inner = (window.UI_ICONS || {})[key];
+  const span = node('span', null, 'ui-icon'); span.setAttribute('aria-hidden', 'true');
+  if (inner) span.insertAdjacentHTML('afterbegin', `<svg viewBox="0 0 256 256" fill="currentColor">${inner}</svg>`); // static, trusted markup only
+  return span;
+}
 function iconNode(tag, name, text, cls) {
   const item = node(tag, null, cls);
+  if ((window.UI_ICONS || {})[name]) { item.append(uiIcon(name)); if (text) item.append(node('span', text)); return item; }
   item.insertAdjacentHTML('afterbegin', ICON[name]); // static, trusted markup only
   if (text) item.append(node('span', text));
   return item;

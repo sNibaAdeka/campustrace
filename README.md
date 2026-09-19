@@ -286,7 +286,36 @@ python3 scripts/benchmark.py --base http://127.0.0.1:8765 --refresh \
 
 Выборка по умолчанию — 15 вузов: Казахстан, Европа, Северная Америка, Азия, Африка, Южная Америка; большие и малые; латиница и кириллица; короткая аббревиатура (`MIT`); два вуза одного города. Скрипт считает p50/p95 для `submit → первое фото` и `submit → полный профиль`, число неполных профилей и число превышений 30 секунд.
 
-### Результат живого замера (18.09.2026, 21:14 Asia/Almaty)
+### Замер на проде (19.09.2026, 10:10 Asia/Almaty) — основной
+
+Стенд: https://campustraceapp.vercel.app (Vercel, функция Python), запросы из Казахстана, `--refresh`, вузы по очереди, версия пайплайна 0.8.0, бюджет сервера 21 с. Ключей ИИ на проде в момент замера не было, поэтому столбец Vision = 0. 14 из 15 сборок прошли без единого попадания в кэш источников.
+
+| Запрос | Определён как | Материалов | Разделов | submit→первое фото | submit→полный профиль | Из кэша источников | Vision | Статус |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| Nazarbayev University | Nazarbayev University | 20 | 4 | 8.9 с | 8.9 с | 0/16 | 0 | complete |
+| Astana IT University | Astana IT University | 14 | 5 | 6.9 с | 6.9 с | 0/8 | 0 | complete |
+| Al-Farabi Kazakh National University | Al-Farabi Kazakh National University | 12 | 2 | 1.5 с | 9.7 с | 0/16 | 0 | complete |
+| University of Tartu | University of Tartu | 40 | 3 | 1.3 с | 15.8 с | 0/20 | 0 | partial |
+| МГУ | Lomonosov Moscow State University | 83 | 5 | 2.4 с | 16.7 с | 1/19 | 0 | complete |
+| MIT | Massachusetts Institute of Technology | 63 | 7 | 2.9 с | 13.0 с | 0/17 | 0 | complete |
+| University of Pennsylvania | University of Pennsylvania | 60 | 6 | 2.3 с | 13.7 с | 0/18 | 0 | complete |
+| Universität Heidelberg | Heidelberg University | 49 | 3 | 2.1 с | 13.4 с | 0/17 | 0 | complete |
+| Politecnico di Milano | Politecnico di Milano | 41 | 6 | 1.9 с | 10.7 с | 0/15 | 0 | complete |
+| Université de Montréal | Université de Montréal | 55 | 4 | 1.9 с | 13.7 с | 0/17 | 0 | complete |
+| National University of Singapore | National University of Singapore | 32 | 5 | 11.3 с | 11.3 с | 0/16 | 0 | complete |
+| Universidad de Buenos Aires | Universidad de Buenos Aires | 28 | 3 | 1.9 с | 8.4 с | 0/14 | 0 | partial |
+| Uppsala universitet | Uppsala University | 40 | 5 | 2.2 с | 15.8 с | 0/20 | 0 | complete |
+| University of Cape Town | University of Cape Town | 70 | 6 | 3.0 с | 16.9 с | 0/19 | 0 | partial |
+| Kyoto University | Kyoto University | 35 | 3 | 2.2 с | 9.8 с | 0/15 | 0 | partial |
+
+Замер: 2026-09-19 10:10:44+0500. Вузов: 15, с материалами: 15, пустых: 0, не найдено в реестре: 0, ошибок: 0, недоступен реестр: 0, неполных профилей: 4. Сборок без единого попадания в кэш источников: 14. Стенд: https://campustraceapp.vercel.app.
+
+submit → первое фото: p50 2180 мс, p95 8936 мс.
+submit → полный профиль: p50 12979 мс, p95 16693 мс, максимум 16935 мс, превысили 30 с: 0.
+
+Итог: у всех 15 вузов есть фото с открытой лицензией (в среднем 42,8), ошибок нет, ни один вуз не превысил 30 секунд; первое фото — p50 2,2 с; полный профиль — p50 13,0 с, максимум 16,9 с. Сырые строки — `docs/benchmark-prod.json`.
+
+### Предыдущий локальный замер (18.09.2026, 21:14 Asia/Almaty)
 
 Стенд: MacBook, домашняя сеть в Казахстане, локальный сервер с **пустой** SQLite (кэш источников холодный), `--refresh`, вузы по очереди. Код — коммит `36790f9`, запущенный с `REQUEST_TIMEOUT_SECONDS=6` (в самом коммите значение по умолчанию уже 8 с — почему, см. ниже; воспроизвести: `REQUEST_TIMEOUT_SECONDS=6 DATABASE_PATH=/tmp/cold.sqlite3 uvicorn app.main:app --port 8766`). «Из кэша источников» — сколько ответов внешних API пришло из кэша: это поиск и предпросмотр того же вуза, запущенные браузером одновременно со сборкой. «submit→первое фото» — момент, когда ответил `/preview` с кадрами (так же, как это видит пользователь); если предпросмотр пуст, первое фото приходит вместе с полным профилем. Vision — сколько кадров проверено по изображению за эту сборку (бесплатный лимит Groq — примерно 4 мозаики в минуту).
 
