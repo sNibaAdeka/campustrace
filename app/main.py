@@ -29,7 +29,7 @@ ROR_ID = re.compile(r"^[0-9a-z]{9}$")
 # P1.3: the case allows 30 seconds from submit to a useful result. The budget
 # below covers the *whole* server side of that, including the ROR lookup that
 # used to sit outside the measured window, and leaves headroom for transfer.
-PROFILE_BUDGET_SECONDS = float(os.getenv("PROFILE_BUDGET_SECONDS", "24"))
+PROFILE_BUDGET_SECONDS = float(os.getenv("PROFILE_BUDGET_SECONDS", "21"))
 # P1.9: two visitors asking for the same university must not run two identical
 # pipelines against Wikimedia. The second one waits for the first result.
 _inflight: dict[str, asyncio.Task] = {}

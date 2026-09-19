@@ -25,7 +25,7 @@ from . import triage, vision
 from .integrations import SourceError, Sources
 
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 EXCLUDED = (
     "logo", "logotype", "emblem", "coat of arms", "seal", "flag", "badge", "icon",
@@ -274,7 +274,7 @@ DOCUMENT_WORDS = re.compile(
 SUBCATEGORY_EXCLUDED = ("map", "plan", "manuscript", "collection", "scan", "copy", "book", "document",
                         "people", "alumni", "faculty members", "history", "art", "painting", "portrait",
                         "coat of", "demolished", "events", "logo", "publication", "ukiyo")
-PER_SUBCATEGORY_LIMIT = 6
+PER_SUBCATEGORY_LIMIT = 10
 
 
 def valid_title(title: str) -> bool:
@@ -830,14 +830,14 @@ async def build_profile(
             # dormitory/library files (P1.5).
             # One page (up to 500 members): Commons requests are serial by
             # Wikimedia etiquette, so request count is what the user waits for.
-            members = await sources.commons_category(category_name, limit=500, pages=1)
+            members = await sources.commons_category(category_name, limit=500, pages=2 if budget_left() > 20.5 else 1)
             for item in members:
                 if item.get("ns") == 6:
                     candidates[item["title"]] = "category"
             subcats = [x["title"].removeprefix("Category:") for x in members
                        if x.get("ns") == 14 and any(t in x["title"].casefold() for t in SUBCATEGORY_TERMS)
                        and usable_subcategory(x["title"])]
-            for subcat in subcats[:3]:
+            for subcat in subcats[:4]:
                 if budget_left() < 14:
                     incomplete_sources.append("commons_subcategories")
                     warnings.append("Часть подкатегорий Commons пропущена: не хватило времени в бюджете")
@@ -990,7 +990,7 @@ async def build_profile(
             capped.append((title, scope))
     groups["category_sub"] = capped
     selected = (groups["wikidata_image"][:8] + groups["wikidata_building"][:24] + groups["wikipedia"][:16] + groups["depicts"][:30] + groups["category_sub"][:24] +
-                groups["category"][:28] + groups["geo"][:24] + groups["search"][:24] + groups["city"][:8])[:100]
+                groups["category"][:40] + groups["geo"][:24] + groups["search"][:24] + groups["city"][:8])[:150]
     pages: list[dict[str, Any]] = []
     for start in range(0, len(selected), 50):
         if start and budget_left() < 7:
@@ -1089,7 +1089,7 @@ async def build_profile(
             f"ИИ-разбор подписей ({triage_stats['model']}): прочитано {triage_stats['checked']}, "
             f"уточнена категория у {triage_stats['categorised']}, понижено {triage_stats['demoted']}.")
     # Gallery breadth is a feature, provided the source and licence remain visible.
-    assets = ([a for a in assets if a["category"] not in ("city", "unknown")][:60] +
+    assets = ([a for a in assets if a["category"] not in ("city", "unknown")][:90] +
               [a for a in assets if a["category"] == "city"][:10] +
               [a for a in assets if a["category"] == "unknown"][:14])
 
